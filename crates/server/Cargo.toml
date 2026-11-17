@@ -1,0 +1,13 @@
+[package]
+name = "riftline-server"
+description = "Authoritative game server: rooms, fixed-tick simulation, snapshots, static client"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+riftline-sim = { path = "../sim" }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tower-http = { version = "0.6", features = ["fs"] }

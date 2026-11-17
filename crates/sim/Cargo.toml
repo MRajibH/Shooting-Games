@@ -1,0 +1,19 @@
+[package]
+name = "riftline-sim"
+description = "Deterministic simulation and wire protocol shared by the server (native) and the browser (WebAssembly)"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+libm = "0.2.16"
+serde = { version = "1", features = ["derive"] }
+wasm-bindgen = { version = "=0.2.130", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
