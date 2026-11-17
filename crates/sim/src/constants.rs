@@ -59,3 +59,18 @@ pub mod slap {
     pub const DAZE_DECAY: f32 = 8.0;
     pub const KO_TIME: f32 = 3.5;
 }
+
+/// Combat mode: health, death and where shots leave from.
+pub mod combat {
+    pub const MAX_HP: f32 = 100.0;
+    /// Health starts coming back after this long without taking damage.
+    pub const REGEN_DELAY: f32 = 5.0;
+    pub const REGEN_RATE: f32 = 15.0;
+    pub const RESPAWN_TIME: f32 = 4.0;
+    /// Shots leave from a point beside the head (over the right shoulder), which is
+    /// also where the third-person camera's aim ray passes, so the crosshair is exact.
+    pub const SHOULDER: f32 = 0.5;
+    pub const LEAN_SHIFT: f32 = 0.45;
+    /// Bullets are dropped after this long in flight.
+    pub const BULLET_LIFE: f32 = 2.5;
+}

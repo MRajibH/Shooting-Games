@@ -31,13 +31,49 @@
       #menu .keys { margin-top: 16px; color: var(--dim); font-size: 12px; }
 
       #hud { position: fixed; inset: 0; pointer-events: none; }
-      #crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px;
-        border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 0 2px #000; }
+      #xh { position: absolute; left: 50%; top: 50%; --gap: 8px; }
+      #xh i { position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 2px rgba(0,0,0,.8); transition: opacity .1s; }
+      #xh i:nth-child(1), #xh i:nth-child(2) { width: 2px; height: 9px; left: -1px; }
+      #xh i:nth-child(3), #xh i:nth-child(4) { width: 9px; height: 2px; top: -1px; }
+      #xh i:nth-child(1) { bottom: var(--gap); }
+      #xh i:nth-child(2) { top: var(--gap); }
+      #xh i:nth-child(3) { right: var(--gap); }
+      #xh i:nth-child(4) { left: var(--gap); }
+      #xh b { position: absolute; width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px; border-radius: 50%; background: rgba(255,255,255,.9); box-shadow: 0 0 2px #000; }
+      #xh.aimed i { opacity: 0; }
+      #scope { position: absolute; inset: 0; background:
+          linear-gradient(#000, #000) center / 1px 100% no-repeat,
+          linear-gradient(#000, #000) center / 100% 1px no-repeat,
+          radial-gradient(circle at center, transparent 0 calc(min(46vw, 46vh)), #000 calc(min(46vw, 46vh) + 2px)); }
+      #scope:not(.hidden) + #xh { display: none; }
+      #dmg { position: absolute; left: 50%; top: 50%; }
+      #dmg .arc { position: absolute; left: -90px; top: -90px; width: 180px; height: 180px; border-radius: 50%;
+        border-top: 6px solid rgba(220,40,30,.85); box-sizing: border-box; -webkit-mask: linear-gradient(90deg, transparent 32%, #000 42% 58%, transparent 68%);
+        mask: linear-gradient(90deg, transparent 32%, #000 42% 58%, transparent 68%); }
+      #hint { position: absolute; left: 50%; top: calc(50% + 48px); transform: translateX(-50%); color: var(--ink);
+        font-size: 13px; text-shadow: 0 1px 2px #000; }
+      #ammo { position: absolute; right: 16px; bottom: 16px; text-align: right; padding: 8px 12px; border-radius: 6px; background: var(--panel); }
+      #mag { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      #mag.low { color: var(--bad); }
+      #res { color: var(--dim); font-size: 16px; margin-left: 4px; font-variant-numeric: tabular-nums; }
+      #wname { color: var(--dim); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+      #slots { display: flex; gap: 4px; justify-content: flex-end; margin-top: 6px; }
+      #slots span { width: 18px; height: 18px; border-radius: 3px; font-size: 11px; display: grid; place-items: center;
+        background: rgba(255,255,255,.08); color: var(--dim); }
+      #slots span.on { background: var(--accent); color: #1a1408; font-weight: 700; }
+      #hp i { background: #dfe6ea; }
+      #hp.low i { background: var(--bad); }
+      #feed .w { color: var(--dim); font-size: 11px; padding: 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+      @media (max-width: 600px) { #help, #board { display: none; } #mag { font-size: 26px; } }
       #hit { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; opacity: 0;
         transition: opacity .25s; background:
           linear-gradient(45deg, transparent 45%, #fff 45% 55%, transparent 55%),
           linear-gradient(-45deg, transparent 45%, #fff 45% 55%, transparent 55%); }
       #hit.on { opacity: 1; transition: none; }
+      #hit.head { transform: scale(1.35); }
+      #hit.kill { transform: scale(1.5); background:
+          linear-gradient(45deg, transparent 43%, #e8392d 43% 57%, transparent 57%),
+          linear-gradient(-45deg, transparent 43%, #e8392d 43% 57%, transparent 57%); }
       #status { position: absolute; top: 12px; left: 12px; padding: 6px 10px; border-radius: 6px; background: var(--panel); color: var(--dim); font-size: 12px; }
       #feed { position: absolute; top: 48px; left: 12px; display: grid; gap: 4px; }
       #feed div { padding: 4px 8px; border-radius: 4px; background: var(--panel); font-size: 13px; }
@@ -57,7 +93,8 @@
       #vignette { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(120,10,10,.75)); }
       #ko { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.45);
         font-size: 42px; font-weight: 800; letter-spacing: .15em; text-align: center; }
-      #ko small { display: block; font-size: 14px; font-weight: 400; letter-spacing: .05em; color: var(--dim); }
+      #ko small { display: block; font-size: 14px; font-weight: 400; letter-spacing: .05em; color: var(--dim); margin-top: 6px; }
+      #ko small b { color: var(--ink); }
       #help { position: absolute; left: 12px; bottom: 12px; color: var(--dim); font-size: 11px; background: var(--panel); padding: 6px 8px; border-radius: 6px; }
     </style>
   </head>
@@ -70,27 +107,33 @@
         <input id="name" maxlength="16" autocomplete="off" placeholder="Operator" />
         <label>Mode</label>
         <div class="modes">
-          <label><input type="radio" name="mode" value="slap" checked />Slap Arena<small>Open hand only. Knock them out.</small></label>
-          <label><input type="radio" name="mode" value="combat" />Combat<small>Weapons arrive next milestone.</small></label>
+          <label><input type="radio" name="mode" value="combat" checked />Combat<small>Four weapons, real ballistics.</small></label>
+          <label><input type="radio" name="mode" value="slap" />Slap Arena<small>Open hand only. Knock them out.</small></label>
         </div>
         <label for="room">Private room code (optional)</label>
         <input id="room" maxlength="8" autocomplete="off" placeholder="Quick play" />
         <button type="submit">DEPLOY</button>
-        <div class="keys">WASD move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse slap</div>
+        <div class="keys">WASD move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse fire / slap · 1–4 weapons · R reload</div>
       </form>
     </div>
 
     <div id="hud" class="hidden">
       <div id="vignette"></div>
-      <div id="crosshair"></div>
+      <div id="scope" class="hidden"></div>
+      <div id="xh" class="aimed"><i></i><i></i><i></i><i></i><b></b></div>
       <div id="hit"></div>
+      <div id="dmg"></div>
+      <div id="hint"></div>
       <div id="status">connecting…</div>
       <div id="feed"></div>
       <div id="board"></div>
       <div class="bars">
+        <div id="hp-wrap" class="hidden"><div class="bar-label">Health</div><div class="bar" id="hp"><i></i></div></div>
         <div id="daze-wrap"><div class="bar-label">Daze</div><div class="bar" id="daze"><i></i></div></div>
         <div><div class="bar-label">Stamina</div><div class="bar" id="stamina"><i></i></div></div>
       </div>
+      <div id="ammo" class="hidden"><div><b id="mag">0</b><span id="res">/ 0</span></div><div id="wname"></div>
+        <div id="slots"><span>1</span><span>2</span><span>3</span><span>4</span></div></div>
       <div id="ko" class="hidden"><div>KNOCKED OUT<small>Getting back up…</small></div></div>
       <div id="help">Click to capture mouse · Esc to release</div>
     </div>

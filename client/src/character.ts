@@ -1,11 +1,14 @@
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { buildGun, type GunModel } from './guns';
 
 /**
  * Realistic soldier: skinned mesh with motion-captured Idle/Walk/Run clips, blended by
  * speed, plus procedural layers on top of the clips (crouch, strafe hip twist,
- * aim pitch, lean, slap swing, stagger, knockout).
+ * aim pitch, lean, slap swing, stagger, knockout). Armed, both arms are solved with
+ * two-bone IK onto the weapon (grip and handguard), with hands turned and fingers
+ * curled around it, and the weapon follows aim, sprint, reload and swap states.
  */
 
 let gltf: GLTF | null = null;
@@ -31,10 +34,15 @@ export interface Pose {
   yaw: number; pitch: number;
   crouched: boolean; grounded: boolean;
   lean: number; stun: number; ko: number;
+  armed?: boolean; weapon?: number; ads?: number; reload?: number; reloadLen?: number;
+  swap?: number; lowered?: number; dead?: number;
 }
 
-const BONES = ['Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head', 'RightArm', 'RightForeArm', 'RightHand', 'LeftArm',
+const BONES = ['Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head', 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand',
+  'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand',
   'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightUpLeg', 'RightLeg', 'RightFoot'] as const;
+const FINGERS = ['Index', 'Middle', 'Ring', 'Pinky'] as const;
+const SWAP_TIME = 0.6;
 type BoneName = (typeof BONES)[number];
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -44,16 +52,50 @@ const tv = new THREE.Vector3();
 const ease = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 const damp = (cur: number, target: number, rate: number, dt: number) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
 
-/** Rotate a bone about a world-space axis, on top of whatever the clips set. */
-function rotateWorld(bone: THREE.Object3D, axis: THREE.Vector3, angle: number) {
-  if (Math.abs(angle) < 1e-5) return;
+/** Apply a world-space rotation to a bone (about its own pivot). */
+function applyWorld(bone: THREE.Object3D, q: THREE.Quaternion) {
   bone.parent!.getWorldQuaternion(tq);
-  tq2.setFromAxisAngle(axis, angle);
   // local delta = parent^-1 * worldRot * parent
-  const d = tq.clone().invert().multiply(tq2).multiply(tq);
+  const d = tq.clone().invert().multiply(q).multiply(tq);
   bone.quaternion.premultiply(d);
   bone.updateMatrixWorld(true);
 }
+
+/** Rotate a bone about a world-space axis, on top of whatever the clips set. */
+function rotateWorld(bone: THREE.Object3D, axis: THREE.Vector3, angle: number) {
+  if (Math.abs(angle) < 1e-5) return;
+  applyWorld(bone, tq2.setFromAxisAngle(axis, angle));
+}
+
+const wp = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3());
+
+/** Turn a bone so the world direction `from` (measured from it) points along `to`. */
+function aimBone(bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) {
+  if (from.lengthSq() < 1e-10 || to.lengthSq() < 1e-10) return;
+  applyWorld(bone, new THREE.Quaternion().setFromUnitVectors(from.clone().normalize(), to.clone().normalize()));
+}
+
+/** Analytic two-bone IK: put `hand` (the wrist) on `target`, elbow bending toward `pole`. */
+function twoBoneIK(upper: THREE.Bone, lower: THREE.Bone, hand: THREE.Bone, target: THREE.Vector3, pole: THREE.Vector3) {
+  const a = wp(upper), b = wp(lower), c = wp(hand);
+  const l1 = a.distanceTo(b), l2 = b.distanceTo(c);
+  const toT = target.clone().sub(a);
+  const d = THREE.MathUtils.clamp(toT.length(), Math.abs(l1 - l2) + 1e-3, (l1 + l2) * 0.999);
+  const dir = toT.normalize();
+  const side = pole.clone().sub(a);
+  side.addScaledVector(dir, -side.dot(dir));
+  if (side.lengthSq() < 1e-8) side.set(0, -1, 0);
+  side.normalize();
+  const cosA = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
+  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+  const elbow = a.clone().addScaledVector(dir, cosA * l1).addScaledVector(side, sinA * l1);
+  aimBone(upper, b.clone().sub(a), elbow.sub(a));
+  const b2 = wp(lower), c2 = wp(hand);
+  aimBone(lower, c2.sub(b2), a.addScaledVector(dir, d).sub(b2));
+}
+
+interface HandRig { hand: THREE.Bone; index1: THREE.Bone; middle1: THREE.Bone; pinky1: THREE.Bone; thumb1: THREE.Bone;
+  fingers: THREE.Bone[][]; palmSign: number }
 
 export class Character {
   readonly root = new THREE.Group();
@@ -73,9 +115,21 @@ export class Character {
   private slapT = -1;
   private visY = 0;
   private time = Math.random() * 10;
+  private hands!: { left: HandRig; right: HandRig };
+  private scene: THREE.Scene;
+  private gun: GunModel | null = null;
+  private gunWeapon = -1;
+  private kickT = 1;
+  private aimW = 0;
+  private sprintW = 0;
+  private gunVisible = true;
+  /** Muzzle position in the world (valid after update). */
+  readonly muzzle = new THREE.Vector3();
+  readonly aimDir = new THREE.Vector3(0, 0, -1);
 
   constructor(scene: THREE.Scene, tint?: THREE.Color) {
     if (!gltf) throw new Error('loadCharacter() first');
+    this.scene = scene;
     this.model = SkeletonUtils.clone(gltf.scene);
     this.model.scale.setScalar(scale);
     this.model.rotation.y = yawOffset;
@@ -96,6 +150,14 @@ export class Character {
       this.bones[n] = b;
       this.rest.set(b, b.quaternion.clone());
     }
+    const rig = (side: 'Left' | 'Right'): HandRig => {
+      const g = (n: string) => this.model.getObjectByName(`mixamorig${side}Hand${n}`) as THREE.Bone;
+      const fingers = FINGERS.map((f) => [1, 2, 3].map((k) => g(`${f}${k}`)));
+      for (const b of [...fingers.flat(), g('Thumb1'), g('Thumb2')]) this.rest.set(b, b.quaternion.clone());
+      return { hand: this.bones[`${side}Hand`], index1: g('Index1'), middle1: g('Middle1'), pinky1: g('Pinky1'),
+        thumb1: g('Thumb1'), fingers, palmSign: 1 };
+    };
+    this.hands = { left: rig('Left'), right: rig('Right') };
     this.tilt.add(this.model);
     this.root.add(this.tilt);
     scene.add(this.root);
@@ -111,14 +173,61 @@ export class Character {
     this.mixer.update(0);
     this.root.updateMatrixWorld(true);
     this.footBase = this.footHeight();
+    // which side of the hand is the palm: the side fingers curl toward
+    for (const h of [this.hands.left, this.hands.right]) {
+      const across = wp(h.index1).sub(wp(h.pinky1)).normalize();
+      const dirF = wp(h.middle1).sub(wp(h.hand)).normalize();
+      const tip = h.fingers[1]![2]!;
+      const before = wp(tip);
+      const q = h.middle1.quaternion.clone();
+      rotateWorld(h.middle1, across, 0.6);
+      const moved = wp(tip).sub(before);
+      h.middle1.quaternion.copy(q);
+      h.middle1.updateMatrixWorld(true);
+      h.palmSign = Math.sign(moved.dot(new THREE.Vector3().crossVectors(dirF, across))) || 1;
+    }
+  }
+
+  /** Recoil kick on the model (and pump / bolt cycling). */
+  fire() { this.kickT = 0; }
+
+  private setGun(weapon: number) {
+    if (this.gunWeapon === weapon && this.gun) return;
+    if (this.gun) this.scene.remove(this.gun.group);
+    this.gun = buildGun(weapon);
+    this.gunWeapon = weapon;
+    this.gun.group.visible = this.gunVisible;
+    this.scene.add(this.gun.group);
+  }
+
+  /** Point a hand's fingers along `fingerDir` with the palm facing `palmDir`, then curl them. */
+  private grip(h: HandRig, fingerDir: THREE.Vector3, palmDir: THREE.Vector3, curl: number, trigger = curl) {
+    aimBone(h.hand, wp(h.middle1).sub(wp(h.hand)), fingerDir);
+    const dirF = wp(h.middle1).sub(wp(h.hand)).normalize();
+    const across = wp(h.index1).sub(wp(h.pinky1)).normalize();
+    const palm = new THREE.Vector3().crossVectors(dirF, across).multiplyScalar(h.palmSign).normalize();
+    const want = palmDir.clone().addScaledVector(dirF, -palmDir.dot(dirF)).normalize();
+    const angle = Math.atan2(new THREE.Vector3().crossVectors(palm, want).dot(dirF), palm.dot(want));
+    rotateWorld(h.hand, dirF, angle);
+    const ax = wp(h.index1).sub(wp(h.pinky1)).normalize();
+    h.fingers.forEach((segs, i) => {
+      const c = i === 0 ? trigger : curl;
+      for (const b of segs) rotateWorld(b, ax, c * h.palmSign);
+    });
+    rotateWorld(h.thumb1, dirF, 0.4 * curl * h.palmSign);
   }
 
   slap() { this.slapT = 0; }
 
-  set visible(v: boolean) { this.model.visible = v; }
+  set visible(v: boolean) {
+    this.model.visible = v;
+    this.gunVisible = v;
+    if (this.gun) this.gun.group.visible = v;
+  }
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.root);
+    if (this.gun) scene.remove(this.gun.group);
     this.mixer.stopAllAction();
   }
 
@@ -141,8 +250,12 @@ export class Character {
     this.root.rotation.y = p.yaw;
 
     this.crouchW = damp(this.crouchW, p.crouched ? 1 : 0, 10, dt);
-    this.koW = damp(this.koW, p.ko > 0 ? 1 : 0, p.ko > 0 ? 7 : 3, dt);
+    const down = p.ko > 0 || (p.dead ?? 0) > 0;
+    this.koW = damp(this.koW, down ? 1 : 0, down ? 7 : 3, dt);
     this.stunW = damp(this.stunW, p.stun > 0 || p.ko > 0 ? 1 : 0, 12, dt);
+    const armed = !!p.armed && !down;
+    this.aimW = damp(this.aimW, armed ? 1 : 0, 10, dt);
+    this.sprintW = damp(this.sprintW, armed && (p.lowered ?? 0) > 0 && speed > 4 ? 1 : 0, 9, dt);
 
     // reset bones we layer on, so additive rotations never accumulate
     for (const [b, q] of this.rest) b.quaternion.copy(q);
@@ -224,5 +337,107 @@ export class Character {
       const drop = (this.footBase - this.footHeight()) * c;
       this.tilt.position.y += drop;
     }
+
+    // weapon last, once the body is where it will be drawn
+    if (p.armed) this.setGun(p.weapon ?? 0);
+    if (this.gun) {
+      this.gun.group.visible = this.gunVisible && this.aimW > 0.3;
+      if (this.aimW > 0.3) {
+        this.root.updateMatrixWorld(true);
+        this.holdWeapon(p, dt, forward, right);
+      }
+      this.gun.group.updateMatrixWorld(true);
+      this.muzzle.copy(this.gun.muzzle).applyMatrix4(this.gun.group.matrixWorld);
+    }
+  }
+
+  /**
+   * Shoulder the weapon along the aim, then solve both arms onto it. Sprinting
+   * carries it low across the chest, swapping dips it, reloading tilts it and walks
+   * the support hand to the magazine pouch and back.
+   */
+  private holdWeapon(p: Pose, dt: number, forward: THREE.Vector3, right: THREE.Vector3) {
+    const B = this.bones;
+    const gun = this.gun!;
+    const up = new THREE.Vector3(0, 1, 0);
+    const ads = p.ads ?? 0;
+    // stand bladed: left shoulder forward, head turned back to the target
+    const blade = 0.38 * (1 - this.sprintW);
+    rotateWorld(B.Spine1, UP, -blade * 0.5);
+    rotateWorld(B.Spine2, UP, -blade * 0.5);
+    rotateWorld(B.Neck, UP, blade * 0.6);
+    rotateWorld(B.Head, UP, blade * 0.4);
+
+    // aim direction (the model's), with sprint / swap / reload postures
+    const pitch = p.pitch;
+    const dir = new THREE.Vector3(-Math.sin(p.yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(p.yaw) * Math.cos(pitch));
+    this.aimDir.copy(dir);
+    const swap = Math.min(1, (p.swap ?? 0) / SWAP_TIME);
+    const rl = p.reloadLen && p.reload ? 1 - p.reload / p.reloadLen : 0;
+    const reloading = (p.reload ?? 0) > 0 ? Math.sin(Math.min(1, rl) * Math.PI) : 0;
+    const gunRight = new THREE.Vector3().crossVectors(dir, up).normalize();
+    const lowerBy = this.sprintW * 0.85 + swap * 1.1 + reloading * 0.35;
+    dir.applyAxisAngle(gunRight, -lowerBy).applyAxisAngle(up, this.sprintW * 0.55);
+
+    // shoulder pocket, a little inside the shoulder joint
+    const shoulder = wp(B.RightArm);
+    const pocket = shoulder.clone().addScaledVector(right, -0.05 - 0.03 * ads).addScaledVector(up, -0.02 + 0.03 * ads)
+      .addScaledVector(forward, 0.04);
+    if (this.sprintW > 0.01) pocket.addScaledVector(right, -0.14 * this.sprintW).addScaledVector(up, -0.12 * this.sprintW);
+
+    // recoil: back and up, then settle; pump / bolt cycles a moment later
+    this.kickT += dt;
+    const kick = Math.exp(-this.kickT * 22) * (this.kickT < 1 ? 1 : 0);
+    const kickBack = kick * (gun.action ? 0.06 : 0.035);
+    const gq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(new THREE.Vector3(), dir, up));
+    const roll = reloading * (gun.mag ? 0.45 : 0.8);
+    gq.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), kick * 0.12))
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll));
+    gun.group.quaternion.copy(gq);
+    gun.group.position.copy(pocket).addScaledVector(dir, 0.27 - kickBack).addScaledVector(up, -0.05);
+    gun.group.updateMatrixWorld(true);
+    if (gun.action) {
+      const c = this.kickT - 0.15;
+      const k = c < 0 ? 0 : c < 0.15 ? c / 0.15 : c < 0.3 ? 1 - (c - 0.15) / 0.15 : 0;
+      gun.action.position.copy(gun.action.userData.home ??= gun.action.position.clone()).addScaledVector(gun.actionTravel, k);
+    }
+
+    const L = (v: THREE.Vector3) => v.clone().applyMatrix4(gun.group.matrixWorld);
+    const gUp = new THREE.Vector3(0, 1, 0).applyQuaternion(gq);
+    const gRight = new THREE.Vector3(1, 0, 0).applyQuaternion(gq);
+    const gFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(gq);
+
+    // right hand on the pistol grip
+    const rFingers = gFwd.clone().multiplyScalar(0.55).addScaledVector(gUp, -0.8).normalize();
+    const rWrist = L(new THREE.Vector3(0.035, 0.02, 0.06));
+    twoBoneIK(B.RightArm, B.RightForeArm, B.RightHand, rWrist,
+      wp(B.RightArm).addScaledVector(up, -1).addScaledVector(right, 0.7).addScaledVector(forward, -0.3));
+    this.grip(this.hands.right, rFingers, gRight.clone().negate(), 1.15, 0.55);
+
+    // left hand under the handguard, or out to the pouch and back while reloading
+    let lTarget = L(gun.fore.clone().add(new THREE.Vector3(-0.02, -0.04, 0.03)));
+    if ((p.reload ?? 0) > 0) {
+      const well = L(gun.magwell.clone().add(new THREE.Vector3(-0.03, -0.08, 0.02)));
+      const pouch = wp(B.Hips).addScaledVector(right, -0.18).addScaledVector(forward, 0.12).addScaledVector(up, 0.05);
+      const r = Math.min(1, rl);
+      const lerp = (a: THREE.Vector3, b: THREE.Vector3, t: number) => a.clone().lerp(b, ease(t));
+      lTarget = gun.mag
+        ? r < 0.2 ? lerp(lTarget, well, r / 0.2)
+          : r < 0.45 ? lerp(well, pouch, (r - 0.2) / 0.25)
+          : r < 0.75 ? lerp(pouch, well, (r - 0.45) / 0.3)
+          : r < 0.85 ? well : lerp(well, lTarget, (r - 0.85) / 0.15)
+        : r < 0.5 ? lerp(well, pouch, r / 0.5) : lerp(pouch, well, (r - 0.5) / 0.5);
+      if (gun.mag) {
+        // the magazine travels with the hand while it is out of the gun
+        const out = r > 0.2 && r < 0.75;
+        const home = (gun.mag.userData.home ??= gun.mag.position.clone()) as THREE.Vector3;
+        if (out) gun.mag.position.copy(gun.group.worldToLocal(lTarget.clone().addScaledVector(up, -0.05)));
+        else gun.mag.position.copy(home);
+      }
+    } else if (gun.mag?.userData.home) gun.mag.position.copy(gun.mag.userData.home as THREE.Vector3);
+    const lFingers = gFwd.clone().multiplyScalar(0.55).addScaledVector(gRight, 0.85).normalize();
+    twoBoneIK(B.LeftArm, B.LeftForeArm, B.LeftHand, lTarget,
+      wp(B.LeftArm).addScaledVector(up, -1).addScaledVector(right, -0.6));
+    this.grip(this.hands.left, (p.reload ?? 0) > 0 ? gUp.clone().negate().add(gFwd).normalize() : lFingers, gUp, 0.75);
   }
 }

@@ -1,7 +1,9 @@
 import { Predictor, interpDelayMs } from './wasm/riftline_sim.js';
 import type { ClientMessage, GameEvent, InputFrame, Mode, PlayerState, RosterEntry, ServerMessage } from './protocol';
 
-interface Snap { time: number; players: Map<number, PlayerState>; }
+interface Snap { time: number; tick: number; players: Map<number, PlayerState>; }
+
+export const Flag = { Slap: 1, Shot: 2, Dry: 4 } as const;
 
 const send = (ws: WebSocket, m: ClientMessage) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
 const lerpAngle = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
@@ -14,12 +16,17 @@ export class Net {
   id = 0;
   room = '';
   mode: Mode = 'combat';
-  me = new Predictor(0);
+  me = new Predictor(0, false);
+  /** Server tick of the interpolated world currently on screen. */
+  viewTick = 0;
   roster: RosterEntry[] = [];
   onStatus: (s: string) => void = () => {};
   onWelcome: () => void = () => {};
   onEvent: (e: GameEvent) => void = () => {};
   onRoster: () => void = () => {};
+  /** I (re)spawned: the server's facing for me, so the view can turn to it. */
+  onSpawn: (yaw: number) => void = () => {};
+  private spawned = false;
   private ws: WebSocket;
   private pending: InputFrame[] = [];
   private snaps: Snap[] = [];
@@ -35,19 +42,20 @@ export class Net {
 
   get ready() { return this.id !== 0; }
 
-  /** Apply an input locally right away and send it. Returns true if a slap was thrown. */
-  sendInput(f: InputFrame): boolean {
-    if (!this.ready) return false;
-    const slapped = this.step(f);
+  /** Apply an input locally right away and send it. Returns Flag bits for this tick. */
+  sendInput(f: InputFrame): number {
+    if (!this.ready) return 0;
+    f.view = this.viewTick;
+    const flags = this.step(f);
     this.pending.push(f);
     if (this.pending.length > 240) this.pending.shift();
     // resend the last few frames so one dropped packet does not lose input
     send(this.ws, { t: 'input', frames: this.pending.slice(-3) });
-    return slapped;
+    return flags;
   }
 
   private step(f: InputFrame) {
-    return this.me.step(f.seq, f.moveX, f.moveZ, f.yaw, f.pitch, f.buttons);
+    return this.me.step(f.seq, f.moveX, f.moveZ, f.yaw, f.pitch, f.buttons, f.weapon);
   }
 
   private handle(m: ServerMessage): void {
@@ -56,14 +64,19 @@ export class Net {
       this.room = m.room;
       this.mode = m.mode;
       this.me.free();
-      this.me = new Predictor(m.id);
+      this.me = new Predictor(m.id, m.mode === 'combat');
       this.onStatus(`${m.mode === 'slap' ? 'Slap Arena' : 'Combat'} · room ${m.room}`);
       this.onWelcome();
     } else if (m.t === 'snapshot') {
       const players = new Map(m.players.map((p) => [p.id, p]));
-      this.snaps.push({ time: performance.now(), players });
+      this.snaps.push({ time: performance.now(), tick: m.tick, players });
       if (this.snaps.length > 60) this.snaps.shift();
       const a = players.get(this.id);
+      if (a && (!this.spawned || m.events.some((e) => e.t === 'respawn' && e.id === this.id))) {
+        this.spawned = true;
+        this.pending = [];
+        this.onSpawn(a.yaw);
+      }
       if (a) {
         // reconcile: take the server state, replay inputs it has not processed yet
         this.me.setJson(JSON.stringify(a));
@@ -89,6 +102,7 @@ export class Net {
     const a = s[i]!;
     const b = s[Math.min(i + 1, s.length - 1)]!;
     const k = b.time > a.time ? Math.min(1, Math.max(0, (t - a.time) / (b.time - a.time))) : 0;
+    this.viewTick = a.tick + (b.tick - a.tick) * k;
     const out: PlayerState[] = [];
     for (const [id, pa] of a.players) {
       if (id === this.id) continue;

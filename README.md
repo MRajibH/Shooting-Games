@@ -6,7 +6,41 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
 
 ## Status
 
-**Milestone 2 done: movement, map, character, Slap mode.**
+**Milestone 3 done: combat.** (Milestone 2: movement, map, character, Slap mode.)
+
+- **Four weapons** (table in `crates/sim/src/weapons.rs`, shared by server and client):
+
+  | Weapon | Mag | Rate | Muzzle velocity | Damage (torso / head) |
+  |---|---|---|---|---|
+  | Carbine (5.56) | 30 + 1 | 750 rpm, auto / semi | 880 m/s | 31 / 108 |
+  | SMG (9 mm) | 30 | 900 rpm, auto / semi | 380 m/s | 23 / 57 |
+  | Pump shotgun (00 buck) | 7 shells | 70 rpm | 400 m/s | 9 × 15 / pellet |
+  | Bolt rifle (.338, scoped) | 5 | 45 rpm | 850 m/s | 105 / 262 |
+
+  Magazines and spare ammo, tactical reload keeps a round chambered, empty reloads are slower,
+  shells load one at a time (and firing interrupts), trigger discipline (semi needs a release),
+  fire-mode toggle, 0.6 s weapon swap, sprinting lowers the weapon.
+- **Ballistics:** every round is a projectile with muzzle velocity, air drag and gravity drop,
+  flying across ticks; damage falls off with distance. Map walls, floors and cover stop rounds.
+- **Hitboxes:** head sphere, torso and legs capsules that follow crouch and lean; headshot and
+  limb multipliers per weapon. 100 hp, regeneration after 5 s without damage, 4 s respawn at the
+  spawn point farthest from enemies.
+- **Lag compensation:** each input frame carries the server tick the player was looking at;
+  hits are tested against players as they were then (capped at 250 ms). The server also drains
+  a backed-up input queue so latency cannot build up.
+- **Aiming:** hip spread vs aimed spread (the crosshair gap shows the real cone), movement and
+  airborne penalties, bloom, deterministic spread and recoil computed in the shared sim, view
+  kick that settles back about halfway, weapon sway (crouch and holding breath steady it),
+  per-weapon aimed zoom and a scope for the bolt rifle.
+- **Look and sound:** procedural gun models at real sizes held with two-hand arm IK (hands
+  turned and fingers curled onto the grip and handguard), reload animation that carries the
+  magazine to the pouch and back, pump and bolt cycling, recoil on the model. Tracers, muzzle
+  flash with light, bullet holes, dust or sparks by material, hit puffs. Synthesised gunshots
+  per weapon with speed-of-sound delay and distance filtering, supersonic snaps near you,
+  impact sounds, reload foley, hit marker sounds.
+- **HUD:** ammo / weapon / fire mode / slots, health bar, damage direction arcs, hit markers
+  (head and kill variants), kill feed with weapon and headshot, death screen (killer, weapon,
+  distance, countdown), K / D scoreboard.
 
 - **Map:** 64 x 64 m industrial yard (shared Rust data): brick and plaster buildings, shipping
   containers (one stacked), a 3 m steel walkway with two 15-step stairs, concrete barriers,
@@ -22,7 +56,6 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
   back, staggers them and adds daze; full daze (three quick slaps) is a 3.5 s knockout, then a
   respawn. Scoreboard (KOs, slaps), knockout feed, hit marker, daze meter and vignette,
   synthesised slap / whoosh / thud sounds with stereo position.
-- **Combat mode:** movement only; weapons and ballistics are milestone 3.
 - **Camera:** over-the-shoulder with aim zoom, lean offset and wall collision.
 
 Debug handle in the browser console: `__riftline` (fps, renderer, scene, net).
@@ -31,9 +64,9 @@ Debug handle in the browser console: `__riftline` (fps, renderer, scene, net).
 
 | Path | Role |
 |---|---|
-| `crates/sim` | Shared Rust: constants, protocol, map, movement and collision. Native for the server, WASM for the browser |
-| `crates/server` | axum + tokio: `/ws`, room registry, one task per room, serves `client/dist` |
-| `client/` | Vite + three.js: menu, HUD, input, netcode, world, character, audio. `src/wasm/` is generated |
+| `crates/sim` | Shared Rust: constants, protocol, map, movement and collision, weapons, ballistics, hitboxes. Native for the server, WASM for the browser |
+| `crates/server` | axum + tokio: `/ws`, room registry, one task per room (bullets, lag-compensated hits, damage, respawn), serves `client/dist` |
+| `client/` | Vite + three.js: menu, HUD, input (recoil, sway), netcode, world, character (weapon IK), guns, effects, audio. `src/wasm/` is generated |
 
 ## Requirements
 
@@ -56,4 +89,5 @@ npm run build && npm start  # one Rust binary on :8080 serving the game
 
 Open two tabs to see multiplayer. `?room=CODE&name=You` joins a private room.
 Controls: click to capture the mouse, WASD, Shift sprint, Space jump / vault, C / Ctrl crouch,
-Q / E lean, right mouse aim, left mouse slap. `?mode=slap|combat` preselects the mode.
+Q / E lean, right mouse aim, left mouse fire (slap in Slap mode), 1–4 or wheel weapons, R reload,
+B fire mode, Shift while aimed holds breath. `?mode=combat|slap` preselects the mode.

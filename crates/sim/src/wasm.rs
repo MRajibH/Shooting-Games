@@ -3,22 +3,25 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::constants::{self, slap};
+use crate::constants::{self, combat, slap};
 use crate::map;
 use crate::protocol::{InputFrame, PlayerState};
-use crate::sim::{spawn_state, step_player};
+use crate::sim::{self, spawn_state, step_player, StepResult};
+use crate::weapons;
 
 #[wasm_bindgen]
 pub struct Predictor {
     s: PlayerState,
+    last: StepResult,
 }
 
 #[wasm_bindgen]
 impl Predictor {
     #[wasm_bindgen(constructor)]
-    pub fn new(id: u32) -> Predictor {
+    pub fn new(id: u32, armed: bool) -> Predictor {
         Predictor {
-            s: spawn_state(id, 0),
+            s: spawn_state(id, 0, armed),
+            last: StepResult::default(),
         }
     }
 
@@ -30,7 +33,8 @@ impl Predictor {
         }
     }
 
-    /// Returns true when a slap was thrown this tick.
+    /// Returns flags: 1 slap thrown, 2 shot fired, 4 dry trigger on an empty magazine.
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         seq: u32,
@@ -39,7 +43,8 @@ impl Predictor {
         yaw: f32,
         pitch: f32,
         buttons: u32,
-    ) -> bool {
+        weapon: u8,
+    ) -> u32 {
         let f = InputFrame {
             seq,
             move_x,
@@ -47,8 +52,96 @@ impl Predictor {
             yaw,
             pitch,
             buttons,
+            weapon,
+            view: 0.0,
         };
-        step_player(&mut self.s, &f, constants::TICK_DT).slap
+        self.last = step_player(&mut self.s, &f, constants::TICK_DT);
+        u32::from(self.last.slap)
+            | (u32::from(!self.last.shots.is_empty()) << 1)
+            | (u32::from(self.last.dry) << 2)
+    }
+
+    /// Rounds from the last step: 6 floats each (origin xyz, direction xyz).
+    pub fn shots(&self) -> Vec<f32> {
+        self.last
+            .shots
+            .iter()
+            .flat_map(|s| {
+                [
+                    s.origin[0],
+                    s.origin[1],
+                    s.origin[2],
+                    s.dir[0],
+                    s.dir[1],
+                    s.dir[2],
+                ]
+            })
+            .collect()
+    }
+    #[wasm_bindgen(getter, js_name = kickPitch)]
+    pub fn kick_pitch(&self) -> f32 {
+        self.last.kick.0
+    }
+    #[wasm_bindgen(getter, js_name = kickYaw)]
+    pub fn kick_yaw(&self) -> f32 {
+        self.last.kick.1
+    }
+    /// Current shot cone half-angle (radians), for the crosshair.
+    #[wasm_bindgen(getter)]
+    pub fn spread(&self) -> f32 {
+        sim::spread(&self.s)
+    }
+    #[wasm_bindgen(getter)]
+    pub fn armed(&self) -> bool {
+        self.s.armed
+    }
+    #[wasm_bindgen(getter)]
+    pub fn hp(&self) -> f32 {
+        self.s.hp
+    }
+    #[wasm_bindgen(getter)]
+    pub fn dead(&self) -> f32 {
+        self.s.dead
+    }
+    #[wasm_bindgen(getter)]
+    pub fn weapon(&self) -> u8 {
+        self.s.weapon
+    }
+    #[wasm_bindgen(getter)]
+    pub fn mag(&self) -> u16 {
+        self.s.mags[self.s.weapon as usize]
+    }
+    #[wasm_bindgen(getter)]
+    pub fn reserve(&self) -> u16 {
+        self.s.reserves[self.s.weapon as usize]
+    }
+    #[wasm_bindgen(getter)]
+    pub fn reload(&self) -> f32 {
+        self.s.reload
+    }
+    #[wasm_bindgen(getter, js_name = reloadLen)]
+    pub fn reload_len(&self) -> f32 {
+        self.s.reload_len
+    }
+    #[wasm_bindgen(getter)]
+    pub fn swap(&self) -> f32 {
+        self.s.swap
+    }
+    #[wasm_bindgen(getter)]
+    pub fn ads(&self) -> f32 {
+        self.s.ads
+    }
+    #[wasm_bindgen(getter)]
+    pub fn semi(&self) -> bool {
+        self.s.semi
+    }
+    #[wasm_bindgen(getter)]
+    pub fn lowered(&self) -> f32 {
+        self.s.lowered
+    }
+    #[wasm_bindgen(getter)]
+    pub fn pitch(&self) -> f32 {
+        self.s.pitch
     }
 
     #[wasm_bindgen(getter)]
@@ -107,6 +200,28 @@ impl Predictor {
     pub fn daze(&self) -> f32 {
         self.s.daze
     }
+}
+
+/// The weapon table as JSON (array of WeaponSpec, camelCase).
+#[wasm_bindgen(js_name = weaponsJson)]
+pub fn weapons_json() -> String {
+    serde_json::to_string(&weapons::WEAPONS).unwrap_or_default()
+}
+#[wasm_bindgen(js_name = shoulderOffset)]
+pub fn shoulder_offset() -> f32 {
+    combat::SHOULDER
+}
+#[wasm_bindgen(js_name = leanShift)]
+pub fn lean_shift() -> f32 {
+    combat::LEAN_SHIFT
+}
+#[wasm_bindgen(js_name = respawnTime)]
+pub fn respawn_time() -> f32 {
+    combat::RESPAWN_TIME
+}
+#[wasm_bindgen(js_name = gravity)]
+pub fn gravity() -> f32 {
+    constants::movement::GRAVITY
 }
 
 #[wasm_bindgen(js_name = tickDt)]

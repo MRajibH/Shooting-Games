@@ -9,6 +9,7 @@ export const Button = {
   Crouch: 1 << 5,
   LeanLeft: 1 << 6,
   LeanRight: 1 << 7,
+  FireMode: 1 << 8,
 } as const;
 
 export interface InputFrame {
@@ -18,6 +19,10 @@ export interface InputFrame {
   yaw: number;
   pitch: number;
   buttons: number;
+  /** Weapon slot wanted (0..3). */
+  weapon: number;
+  /** Server tick of the world on screen when this frame was made (lag compensation). */
+  view: number;
 }
 
 export interface PlayerState {
@@ -35,6 +40,35 @@ export interface PlayerState {
   ko: number;
   slapCd: number;
   daze: number;
+  armed: boolean;
+  hp: number;
+  dead: number;
+  regenCd: number;
+  weapon: number;
+  mags: number[];
+  reserves: number[];
+  fireCd: number;
+  reload: number;
+  reloadLen: number;
+  swap: number;
+  lowered: number;
+  ads: number;
+  bloom: number;
+  shots: number;
+  semi: boolean;
+  triggerSpent: boolean;
+  held: number;
+}
+
+export type Zone = 'head' | 'torso' | 'limb';
+export type V3 = [number, number, number];
+
+export interface WeaponSpec {
+  name: string; mag: number; reserve: number; interval: number; auto: boolean; pellets: number;
+  muzzleVelocity: number; drag: number; damage: number; falloffStart: number; falloffEnd: number;
+  falloffMin: number; headMult: number; limbMult: number; hipSpread: number; adsSpread: number;
+  moveSpread: number; bloom: number; kickUp: number; kickSide: number; reloadTactical: number;
+  reloadEmpty: number; reloadPerShell: boolean; chamber: boolean; adsTime: number; adsFov: number; sway: number;
 }
 
 export type Mode = 'combat' | 'slap';
@@ -42,9 +76,13 @@ export type Mode = 'combat' | 'slap';
 export type GameEvent =
   | { t: 'slap'; from: number; to: number | null }
   | { t: 'ko'; from: number; to: number }
-  | { t: 'respawn'; id: number };
+  | { t: 'respawn'; id: number }
+  | { t: 'fire'; id: number; w: number; o: V3; d: V3 }
+  | { t: 'impact'; p: V3; n: V3; mat: number }
+  | { t: 'hit'; from: number; to: number; dmg: number; zone: Zone; p: V3 }
+  | { t: 'kill'; from: number; to: number; w: number; head: boolean; dist: number };
 
-export interface RosterEntry { id: number; name: string; slaps: number; kos: number }
+export interface RosterEntry { id: number; name: string; slaps: number; kos: number; kills: number; deaths: number }
 
 export type ClientMessage =
   | { t: 'join'; name: string; room?: string; mode?: Mode }

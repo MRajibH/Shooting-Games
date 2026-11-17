@@ -1,16 +1,242 @@
 //! Player movement and collision. Uses `libm` (pure Rust maths) instead of platform
 //! maths so the native server and the WebAssembly client produce bit-identical results.
 
-use crate::constants::{body::*, movement::*, slap, stamina as st};
+use crate::ballistics::{raycast_map, V3};
+use crate::constants::{body::*, combat, movement::*, slap, stamina as st};
 use crate::map::{self, MapBox, HALF};
 use crate::protocol::{button, InputFrame, PlayerState};
+use crate::weapons::{self, spec};
 
 const EPS: f32 = 1e-4;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+/// A round leaving the gun.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shot {
+    pub origin: V3,
+    pub dir: V3,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct StepResult {
     /// A slap was thrown this tick (hit resolution is the server's job).
     pub slap: bool,
+    /// The trigger released a shot (one entry per round or pellet).
+    pub shots: Vec<Shot>,
+    /// Trigger pulled on an empty magazine.
+    pub dry: bool,
+    /// View kick from recoil to add to the player's aim: (pitch up, yaw).
+    pub kick: (f32, f32),
+}
+
+/// Deterministic hash -> [0, 1), so spread matches on server and client.
+fn rand01(a: u32, b: u32, c: u32) -> f32 {
+    let mut x = a
+        .wrapping_mul(0x9E37_79B9)
+        .wrapping_add(b.wrapping_mul(0x85EB_CA6B))
+        .wrapping_add(c.wrapping_mul(0xC2B2_AE35))
+        .wrapping_add(0x27D4_EB2F);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7FEB_352D);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846C_A68B);
+    x ^= x >> 16;
+    (x >> 8) as f32 / 16_777_216.0
+}
+
+pub fn eye(p: &PlayerState) -> f32 {
+    if p.crouched {
+        CROUCH_EYE_HEIGHT
+    } else {
+        EYE_HEIGHT
+    }
+}
+
+/// Where shots leave from: beside the head over the right shoulder, on the camera's
+/// aim ray. Falls back to the eye if that point is inside a wall.
+pub fn muzzle_origin(p: &PlayerState) -> V3 {
+    let e = [p.x, p.y + eye(p), p.z];
+    let off = combat::SHOULDER + p.lean * combat::LEAN_SHIFT;
+    let r = [libm::cosf(p.yaw), 0.0, -libm::sinf(p.yaw)];
+    let reach = off.abs();
+    if reach < 1e-3 {
+        return e;
+    }
+    let s = off.signum();
+    let d = [r[0] * s, 0.0, r[2] * s];
+    match raycast_map(e, d, reach + 0.05) {
+        Some(_) => e,
+        None => [e[0] + d[0] * reach, e[1], e[2] + d[2] * reach],
+    }
+}
+
+pub fn aim_dir(yaw: f32, pitch: f32) -> V3 {
+    let cp = libm::cosf(pitch);
+    [
+        -libm::sinf(yaw) * cp,
+        libm::sinf(pitch),
+        -libm::cosf(yaw) * cp,
+    ]
+}
+
+/// Current cone half-angle of a shot.
+pub fn spread(p: &PlayerState) -> f32 {
+    let s = spec(p.weapon);
+    let speed = libm::hypotf(p.vx, p.vz);
+    let mut a =
+        s.hip_spread + (s.ads_spread - s.hip_spread) * p.ads + speed * s.move_spread + p.bloom;
+    if !p.grounded {
+        a += 0.05;
+    } else if p.crouched {
+        a *= 0.75;
+    }
+    a
+}
+
+fn rounds_needed(p: &PlayerState) -> u16 {
+    let s = spec(p.weapon);
+    let w = p.weapon as usize;
+    let cap = s.mag + u16::from(s.chamber && p.mags[w] > 0);
+    cap.saturating_sub(p.mags[w])
+}
+
+fn start_reload(p: &mut PlayerState) -> bool {
+    let w = p.weapon as usize;
+    if p.reload > 0.0 || rounds_needed(p) == 0 || p.reserves[w] == 0 {
+        return false;
+    }
+    let s = spec(p.weapon);
+    p.reload_len = if s.reload_per_shell || p.mags[w] > 0 {
+        s.reload_tactical
+    } else {
+        s.reload_empty
+    };
+    p.reload = p.reload_len;
+    true
+}
+
+fn finish_reload(p: &mut PlayerState) {
+    let s = spec(p.weapon);
+    let w = p.weapon as usize;
+    let take = if s.reload_per_shell {
+        1
+    } else {
+        rounds_needed(p)
+    }
+    .min(p.reserves[w]);
+    p.mags[w] += take;
+    p.reserves[w] -= take;
+}
+
+/// Weapon handling for one tick: swap, fire mode, aim, reload, trigger.
+fn step_weapon(
+    p: &mut PlayerState,
+    input: &InputFrame,
+    buttons: u32,
+    sprint: bool,
+    dt: f32,
+    res: &mut StepResult,
+) {
+    p.fire_cd = (p.fire_cd - dt).max(-dt);
+    p.swap = (p.swap - dt).max(0.0);
+    p.lowered = if sprint {
+        weapons::SPRINT_OUT
+    } else {
+        (p.lowered - dt).max(0.0)
+    };
+    p.bloom = (p.bloom - weapons::BLOOM_DECAY * dt).max(0.0);
+    let pressed = |b: u32| buttons & b != 0 && p.held & b == 0;
+
+    if (input.weapon as usize) < weapons::COUNT && input.weapon != p.weapon {
+        p.weapon = input.weapon;
+        p.swap = weapons::SWAP_TIME;
+        p.reload = 0.0;
+        p.semi = false;
+        p.trigger_spent = true;
+    }
+    let s = spec(p.weapon);
+    if pressed(button::FIRE_MODE) && s.auto {
+        p.semi = !p.semi;
+    }
+
+    let aiming = buttons & button::AIM != 0 && !sprint && p.swap <= 0.0 && p.reload <= 0.0;
+    let rate = dt / s.ads_time;
+    p.ads = if aiming {
+        (p.ads + rate).min(1.0)
+    } else {
+        (p.ads - rate * 1.5).max(0.0)
+    };
+
+    let trigger = buttons & button::FIRE != 0;
+    if !trigger {
+        p.trigger_spent = false;
+    }
+
+    // reloading: shells go in one at a time and firing interrupts; magazines just finish
+    if p.reload > 0.0 {
+        if s.reload_per_shell && trigger && p.mags[p.weapon as usize] > 0 {
+            p.reload = 0.0;
+        } else {
+            p.reload -= dt;
+            if p.reload <= 0.0 {
+                p.reload = 0.0;
+                finish_reload(p);
+                if s.reload_per_shell {
+                    start_reload(p);
+                }
+            }
+        }
+    }
+    if buttons & button::RELOAD != 0 && p.swap <= 0.0 {
+        start_reload(p);
+    }
+
+    let wants = if s.auto && !p.semi {
+        trigger
+    } else {
+        trigger && !p.trigger_spent
+    };
+    let ready = p.swap <= 0.0 && p.reload <= 0.0 && p.lowered <= 0.0 && p.fire_cd <= 0.0 && !sprint;
+    if !(wants && ready) {
+        return;
+    }
+    p.trigger_spent = true;
+    let w = p.weapon as usize;
+    if p.mags[w] == 0 {
+        res.dry = true;
+        start_reload(p);
+        return;
+    }
+    p.mags[w] -= 1;
+    p.fire_cd = p.fire_cd.max(-dt) + s.interval;
+    let cone = spread(p);
+    let origin = muzzle_origin(p);
+    let (sy, cy) = (libm::sinf(p.yaw), libm::cosf(p.yaw));
+    let (sp, cp) = (libm::sinf(p.pitch), libm::cosf(p.pitch));
+    let fwd = [-sy * cp, sp, -cy * cp];
+    let right = [cy, 0.0, -sy];
+    let up = [sy * sp, cp, cy * sp];
+    for k in 0..s.pellets as u32 {
+        // uniform over the cone's disc
+        let r = cone * libm::sqrtf(rand01(p.id, p.shots, k * 2));
+        let a = std::f32::consts::TAU * rand01(p.id, p.shots, k * 2 + 1);
+        let (ox, oy) = (r * libm::cosf(a), r * libm::sinf(a));
+        let d = [
+            fwd[0] + right[0] * ox + up[0] * oy,
+            fwd[1] + right[1] * ox + up[1] * oy,
+            fwd[2] + right[2] * ox + up[2] * oy,
+        ];
+        let l = crate::ballistics::len(d);
+        res.shots.push(Shot {
+            origin,
+            dir: [d[0] / l, d[1] / l, d[2] / l],
+        });
+    }
+    let mult = (1.0 - 0.3 * p.ads) * if p.crouched { 0.8 } else { 1.0 };
+    let ku = s.kick_up * (0.85 + 0.3 * rand01(p.id, p.shots, 101)) * mult;
+    let ks = s.kick_side * (rand01(p.id, p.shots, 102) * 2.0 - 0.7) * mult;
+    res.kick = (ku, ks);
+    p.bloom = (p.bloom + s.bloom).min(weapons::BLOOM_MAX);
+    p.shots = p.shots.wrapping_add(1);
 }
 
 fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
@@ -70,7 +296,7 @@ fn support(x: f32, z: f32, lo: f32, hi: f32) -> Option<f32> {
     best
 }
 
-pub fn spawn_state(id: u32, spawn: usize) -> PlayerState {
+pub fn spawn_state(id: u32, spawn: usize, armed: bool) -> PlayerState {
     let (x, z, yaw) = map::spawn(spawn);
     PlayerState {
         id,
@@ -79,6 +305,11 @@ pub fn spawn_state(id: u32, spawn: usize) -> PlayerState {
         yaw,
         grounded: true,
         stamina: 1.0,
+        armed,
+        hp: combat::MAX_HP,
+        mags: weapons::WEAPONS.map(|w| w.mag),
+        reserves: weapons::WEAPONS.map(|w| w.reserve),
+        trigger_spent: true,
         ..Default::default()
     }
 }
@@ -154,7 +385,15 @@ pub fn step_player(p: &mut PlayerState, input: &InputFrame, dt: f32) -> StepResu
     p.stun = (p.stun - dt).max(0.0);
     p.ko = (p.ko - dt).max(0.0);
     p.daze = (p.daze - slap::DAZE_DECAY * dt).max(0.0);
-    let disabled = p.stun > 0.0 || p.ko > 0.0;
+    p.dead = (p.dead - dt).max(0.0);
+    let alive = p.dead <= 0.0;
+    if alive && p.armed && p.hp < combat::MAX_HP {
+        p.regen_cd = (p.regen_cd - dt).max(0.0);
+        if p.regen_cd <= 0.0 {
+            p.hp = (p.hp + combat::REGEN_RATE * dt).min(combat::MAX_HP);
+        }
+    }
+    let disabled = p.stun > 0.0 || p.ko > 0.0 || !alive;
     let buttons = if disabled { 0 } else { input.buttons };
 
     let (mut mx, mut mz) = if disabled {
@@ -171,7 +410,7 @@ pub fn step_player(p: &mut PlayerState, input: &InputFrame, dt: f32) -> StepResu
         mz /= len;
     }
 
-    if p.ko <= 0.0 && input.yaw.is_finite() {
+    if p.ko <= 0.0 && alive && input.yaw.is_finite() {
         p.yaw = input.yaw;
     }
     p.pitch = clamp(input.pitch, -MAX_PITCH, MAX_PITCH);
@@ -187,7 +426,9 @@ pub fn step_player(p: &mut PlayerState, input: &InputFrame, dt: f32) -> StepResu
     if p.exhausted && p.stamina >= st::RECOVER {
         p.exhausted = false;
     }
-    let sprint = buttons & button::SPRINT != 0 && mz > 0.5 && !p.crouched && !p.exhausted;
+    // armed: aiming or pulling the trigger stops a sprint
+    let busy = p.armed && buttons & (button::AIM | button::FIRE) != 0;
+    let sprint = buttons & button::SPRINT != 0 && mz > 0.5 && !p.crouched && !p.exhausted && !busy;
     if sprint {
         p.stamina -= st::SPRINT_DRAIN * dt;
         if p.stamina <= 0.0 {
@@ -219,7 +460,7 @@ pub fn step_player(p: &mut PlayerState, input: &InputFrame, dt: f32) -> StepResu
         SPRINT_SPEED
     } else {
         WALK_SPEED
-    };
+    } * (1.0 - (1.0 - weapons::ADS_MOVE_MULT) * p.ads);
     // forward is -Z at yaw 0 (three.js convention)
     let (sin, cos) = (libm::sinf(p.yaw), libm::cosf(p.yaw));
     let (fx, fz) = (-sin, -cos);
@@ -249,10 +490,15 @@ pub fn step_player(p: &mut PlayerState, input: &InputFrame, dt: f32) -> StepResu
         p.grounded = false;
     }
 
-    if buttons & button::FIRE != 0 && p.slap_cd <= 0.0 {
+    if p.armed {
+        if alive {
+            step_weapon(p, input, buttons, sprint, dt, &mut res);
+        }
+    } else if buttons & button::FIRE != 0 && p.slap_cd <= 0.0 {
         p.slap_cd = slap::COOLDOWN;
         res.slap = true;
     }
+    p.held = buttons;
 
     let h = height(p);
     move_axis(p, 0, p.vx * dt, h);
@@ -320,7 +566,7 @@ mod tests {
 
     #[test]
     fn deterministic() {
-        let (mut a, mut b) = (spawn_state(1, 0), spawn_state(1, 0));
+        let (mut a, mut b) = (spawn_state(1, 0, false), spawn_state(1, 0, false));
         for i in 0..600 {
             let f = frame(|f| {
                 f.move_z = 1.0;
@@ -341,7 +587,7 @@ mod tests {
     #[test]
     fn spawns_are_clear() {
         for i in 0..map::spawn_count() {
-            let p = spawn_state(1, i);
+            let p = spawn_state(1, i, false);
             assert!(blocked(p.x, p.y, p.z, STAND_HEIGHT).is_none(), "spawn {i}");
         }
     }
@@ -522,5 +768,176 @@ mod tests {
             w,
             r#"{"t":"welcome","id":1,"room":"R1","tickRate":60,"mode":"slap"}"#
         );
+    }
+
+    // ---- weapons ----
+
+    fn armed() -> PlayerState {
+        let mut p = spawn_state(7, 0, true);
+        p.trigger_spent = false;
+        p
+    }
+
+    fn fire_for(p: &mut PlayerState, ticks: usize, buttons: u32, weapon: u8) -> (usize, bool) {
+        let mut shots = 0;
+        let mut dry = false;
+        for i in 0..ticks {
+            let r = step_player(
+                p,
+                &frame(|f| {
+                    f.seq = i as u32;
+                    f.buttons = buttons;
+                    f.weapon = weapon;
+                    f.yaw = p.yaw;
+                }),
+                TICK_DT,
+            );
+            shots += usize::from(!r.shots.is_empty());
+            dry |= r.dry;
+        }
+        (shots, dry)
+    }
+
+    #[test]
+    fn carbine_fires_at_its_rate_and_empties() {
+        let mut p = armed();
+        // one second of full auto at 750 rpm is 12.5 rounds
+        let (n, _) = fire_for(&mut p, 60, button::FIRE, weapons::RIFLE);
+        assert!((12..=13).contains(&n), "{n} shots");
+        assert_eq!(p.mags[0] as usize, 30 - n);
+        // keep holding: empties, then the dry trigger starts a reload by itself
+        let (_, dry) = fire_for(&mut p, 120, button::FIRE, weapons::RIFLE);
+        assert!(dry && p.reload > 0.0);
+        fire_for(&mut p, (3.0 / TICK_DT) as usize, 0, weapons::RIFLE);
+        assert_eq!(p.mags[0], 30);
+        assert_eq!(p.reserves[0], 90);
+    }
+
+    #[test]
+    fn tactical_reload_keeps_one_in_the_chamber() {
+        let mut p = armed();
+        fire_for(&mut p, 30, button::FIRE, weapons::RIFLE);
+        let before = p.mags[0] + p.reserves[0];
+        fire_for(&mut p, 1, button::RELOAD, weapons::RIFLE);
+        assert!(
+            (p.reload - 2.1).abs() < 0.05,
+            "tactical reload time {}",
+            p.reload
+        );
+        fire_for(&mut p, (2.2 / TICK_DT) as usize, 0, weapons::RIFLE);
+        assert_eq!(p.mags[0], 31);
+        assert_eq!(
+            p.mags[0] + p.reserves[0],
+            before,
+            "no rounds lost or created"
+        );
+    }
+
+    #[test]
+    fn semi_auto_needs_trigger_release() {
+        let mut p = armed();
+        let (n, _) = fire_for(&mut p, 120, button::FIRE, weapons::SNIPER);
+        // switching weapons takes 0.6 s, and the bolt rifle fires once per pull
+        assert_eq!(n, 0, "swap time, trigger still held from before the swap");
+        fire_for(&mut p, 1, 0, weapons::SNIPER);
+        let (n, _) = fire_for(&mut p, 200, button::FIRE, weapons::SNIPER);
+        assert_eq!(n, 1);
+        // fire-mode toggle puts the carbine on semi
+        let mut c = armed();
+        fire_for(&mut c, 1, button::FIRE_MODE, weapons::RIFLE);
+        assert!(c.semi);
+        let (n, _) = fire_for(&mut c, 60, button::FIRE, weapons::RIFLE);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn shotgun_fires_pellets_and_loads_shells_one_by_one() {
+        let mut p = armed();
+        fire_for(&mut p, 40, 0, weapons::SHOTGUN);
+        let r = step_player(
+            &mut p,
+            &frame(|f| {
+                f.buttons = button::FIRE;
+                f.weapon = weapons::SHOTGUN;
+            }),
+            TICK_DT,
+        );
+        assert_eq!(r.shots.len(), 9);
+        assert!(r.kick.0 > 0.04);
+        fire_for(&mut p, 60, 0, weapons::SHOTGUN);
+        p.mags[2] = 4;
+        fire_for(&mut p, 1, button::RELOAD, weapons::SHOTGUN);
+        fire_for(&mut p, (0.55 / TICK_DT) as usize, 0, weapons::SHOTGUN);
+        assert_eq!(p.mags[2], 5, "one shell loaded");
+        assert!(p.reload > 0.0, "and it keeps going while there is room");
+    }
+
+    #[test]
+    fn spread_is_deterministic_and_aiming_tightens_it() {
+        let shoot = |aim: bool| {
+            let mut p = armed();
+            p.ads = if aim { 1.0 } else { 0.0 };
+            let b = if aim {
+                button::FIRE | button::AIM
+            } else {
+                button::FIRE
+            };
+            step_player(&mut p, &frame(|f| f.buttons = b), TICK_DT).shots
+        };
+        assert_eq!(shoot(false), shoot(false));
+        let hip = shoot(false);
+        let ads = shoot(true);
+        let a_hip = libm::acosf(-hip[0].dir[2].clamp(-1.0, 1.0));
+        let a_ads = libm::acosf(-ads[0].dir[2].clamp(-1.0, 1.0));
+        assert!(a_hip <= 0.041 && a_ads <= 0.0036, "{a_hip} {a_ads}");
+    }
+
+    #[test]
+    fn sprinting_lowers_the_weapon() {
+        let mut p = armed();
+        let run = |p: &mut PlayerState, b: u32, n: usize| {
+            let mut fired = 0;
+            for _ in 0..n {
+                let r = step_player(
+                    p,
+                    &frame(|f| {
+                        f.move_z = 1.0;
+                        f.buttons = b;
+                    }),
+                    TICK_DT,
+                );
+                fired += r.shots.len();
+            }
+            fired
+        };
+        run(&mut p, button::SPRINT, 60);
+        assert!(p.lowered > 0.0);
+        // pulling the trigger ends the sprint; the gun comes up after SPRINT_OUT
+        let n = run(&mut p, button::SPRINT | button::FIRE, 6);
+        assert_eq!(n, 0);
+        let n = run(&mut p, button::SPRINT | button::FIRE, 30);
+        assert!(n > 0);
+    }
+
+    #[test]
+    fn health_regenerates_after_a_delay_and_the_dead_cannot_act() {
+        let mut p = armed();
+        p.hp = 40.0;
+        p.regen_cd = combat::REGEN_DELAY;
+        run(
+            &mut p,
+            (combat::REGEN_DELAY / TICK_DT) as usize - 5,
+            InputFrame::default(),
+        );
+        assert!(p.hp < 41.0);
+        run(&mut p, 120, InputFrame::default());
+        assert!(p.hp > 60.0);
+        p.hp = 0.0;
+        p.dead = 2.0;
+        let (n, _) = fire_for(&mut p, 30, button::FIRE, weapons::RIFLE);
+        assert_eq!(n, 0);
+        let x = p.x;
+        run(&mut p, 30, frame(|f| f.move_z = 1.0));
+        assert_eq!(p.x, x);
     }
 }
