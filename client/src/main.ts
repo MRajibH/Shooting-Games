@@ -1,63 +1,28 @@
 import * as THREE from 'three';
-import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import init, { eyeHeight, tickDt } from './wasm/riftline_sim.js';
+import init, { eyeHeight, mapBoxes, mapHalf, tickDt } from './wasm/riftline_sim.js';
+import { Sfx } from './audio';
+import { Character, loadCharacter } from './character';
 import { Input } from './input';
 import { Net } from './net';
+import type { Mode } from './protocol';
+import { buildWorld, parseBoxes, raycastBoxes } from './world';
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 await init();
 
-const status = document.getElementById('status')!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-// Physically based baseline: filmic tone mapping, soft shadows, real sun and sky.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.6;
+renderer.toneMappingExposure = 0.55;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-document.body.appendChild(renderer.domElement);
+document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0xc9d3dc, 0.006);
-
-const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(55), THREE.MathUtils.degToRad(140));
-const sky = new Sky();
-sky.scale.setScalar(4000);
-Object.assign(sky.material.uniforms, {});
-sky.material.uniforms.turbidity!.value = 6;
-sky.material.uniforms.rayleigh!.value = 1.6;
-sky.material.uniforms.sunPosition!.value.copy(sunDir);
-scene.add(sky);
-const pmrem = new THREE.PMREMGenerator(renderer);
-const envScene = new THREE.Scene();
-envScene.add(sky.clone());
-scene.environment = pmrem.fromScene(envScene).texture;
-
-const sun = new THREE.DirectionalLight(0xfff1dd, 3.2);
-sun.position.copy(sunDir).multiplyScalar(80);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.bias = -0.0004;
-Object.assign(sun.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, far: 200 });
-scene.add(sun, sun.target);
-
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(400, 400),
-  new THREE.MeshStandardMaterial({ color: 0x7d7a70, roughness: 0.95 }),
-);
-ground.rotation.x = -Math.PI / 2;
-ground.receiveShadow = true;
-scene.add(ground);
-
-// Scale references (1 m crates) so speeds read correctly until the map lands.
-const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 0.8 });
-for (let i = 0; i < 24; i++) {
-  const c = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), crateMat);
-  c.position.set(Math.cos(i * 2.4) * (6 + i * 1.3), 0.5, Math.sin(i * 2.4) * (6 + i * 1.3));
-  c.castShadow = c.receiveShadow = true;
-  scene.add(c);
-}
-
-const camera = new THREE.PerspectiveCamera(75, 1, 0.05, 3000);
+const boxes = parseBoxes(new Float32Array(mapBoxes()));
+const world = buildWorld(renderer, scene, boxes, mapHalf());
+const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 3000);
 const resize = () => {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
@@ -66,74 +31,190 @@ const resize = () => {
 addEventListener('resize', resize);
 resize();
 
-// Placeholder bodies (1.8 m capsules) until the character rig lands.
-const makeBody = (color: number) => {
-  const g = new THREE.CapsuleGeometry(0.28, 1.24, 4, 12);
-  g.translate(0, 0.9, 0);
-  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color, roughness: 0.7 }));
-  m.castShadow = true;
-  scene.add(m);
-  return m;
-};
-const self = makeBody(0x4f5d3a);
-const others = new Map<number, THREE.Mesh>();
-
+const charLoad = loadCharacter(`${import.meta.env.BASE_URL}models/soldier.glb`);
+const sfx = new Sfx();
 const input = new Input(renderer.domElement);
+
+// Menu: pre-fill from the URL (?name=&room=&mode=) and last session.
 const params = new URLSearchParams(location.search);
-const net = new Net(params.get('name') ?? '', params.get('room') ?? undefined);
-net.onStatus = (s) => (status.textContent = s);
+const nameEl = $<HTMLInputElement>('name');
+const roomEl = $<HTMLInputElement>('room');
+try { nameEl.value = params.get('name') ?? localStorage.getItem('riftline.name') ?? ''; } catch { /* storage blocked */ }
+roomEl.value = params.get('room') ?? '';
+if (params.get('mode') === 'combat') ($<HTMLInputElement>('join').querySelector('input[value=combat]') as HTMLInputElement).checked = true;
+
+let net: Net | null = null;
+let selfChar: Character | null = null;
+const others = new Map<number, Character>();
+const tints = [0xc9d6ff, 0xffd0b0, 0xc6ffcf, 0xffc4d8, 0xfff2b0, 0xd6c8ff, 0xb8f4ff, 0xffffff].map((c) => new THREE.Color(c));
+
+$('join').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  sfx.unlock();
+  const name = nameEl.value.trim();
+  try { localStorage.setItem('riftline.name', name); } catch { /* storage blocked */ }
+  const mode = (new FormData(e.target as HTMLFormElement).get('mode') ?? 'slap') as Mode;
+  await charLoad;
+  $('menu').classList.add('hidden');
+  $('hud').classList.remove('hidden');
+  renderer.domElement.requestPointerLock()?.catch?.(() => {});
+  start(name, roomEl.value.trim() || undefined, mode);
+});
+
+function start(name: string, room: string | undefined, mode: Mode) {
+  net = new Net(name, room, mode);
+  net.onStatus = (s) => ($('status').textContent = s);
+  net.onWelcome = () => {
+    selfChar = new Character(scene, tints[net!.id % tints.length]);
+    $('daze-wrap').classList.toggle('hidden', net!.mode !== 'slap');
+    $('crosshair').classList.toggle('hidden', false);
+  };
+  net.onRoster = renderBoard;
+  net.onEvent = (ev) => {
+    if (!net) return;
+    if (ev.t === 'slap') {
+      if (ev.from !== net.id) others.get(ev.from)?.slap();
+      if (ev.to != null) {
+        const [pan, gain] = spatial(ev.to === net.id ? null : ev.to);
+        sfx.slapHit(pan, gain);
+        if (ev.from === net.id) flashHit();
+      } else if (ev.from !== net.id) {
+        const [pan, gain] = spatial(ev.from);
+        sfx.whoosh(pan, gain);
+      }
+    } else if (ev.t === 'ko') {
+      const [pan, gain] = spatial(ev.to === net.id ? null : ev.to);
+      sfx.knockout(pan, gain);
+      feed(ev.from === net.id ? `You knocked out <b>${esc(net.nameOf(ev.to))}</b>` :
+        ev.to === net.id ? `<b>${esc(net.nameOf(ev.from))}</b> knocked you out` :
+        `<b>${esc(net.nameOf(ev.from))}</b> knocked out <b>${esc(net.nameOf(ev.to))}</b>`);
+    }
+  };
+}
+
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function renderBoard() {
+  if (!net) return;
+  const rows = net.roster.map((r) => `<tr class="${r.id === net!.id ? 'me' : ''}"><td>${esc(r.name)}</td>` +
+    (net!.mode === 'slap' ? `<td>${r.kos}</td><td>${r.slaps}</td>` : '') + '</tr>').join('');
+  $('board').innerHTML = `<table><tr><th>Player</th>${net.mode === 'slap' ? '<th>KO</th><th>Slaps</th>' : ''}</tr>${rows}</table>`;
+}
+
+function feed(html: string) {
+  const d = document.createElement('div');
+  d.innerHTML = html;
+  $('feed').prepend(d);
+  setTimeout(() => d.remove(), 5000);
+  while ($('feed').children.length > 5) $('feed').lastElementChild!.remove();
+}
+
+function flashHit() {
+  const h = $('hit');
+  h.classList.add('on');
+  requestAnimationFrame(() => requestAnimationFrame(() => h.classList.remove('on')));
+}
+
+const positions = new Map<number, THREE.Vector3>();
+/** Stereo pan and distance gain for a sound at a player's position (null = at me). */
+function spatial(id: number | null): [number, number] {
+  if (id == null) return [0, 1];
+  const p = positions.get(id);
+  if (!p) return [0, 0.5];
+  const rel = p.clone().sub(camera.position);
+  const d = rel.length();
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+  return [rel.normalize().dot(right), Math.min(1, 6 / Math.max(1, d))];
+}
+
+// Debug handle for tooling and the console (read-only stats).
+let fpsFrames = 0;
+let fps = 0;
+setInterval(() => { fps = fpsFrames; fpsFrames = 0; }, 1000);
+Object.assign(window, { __riftline: { get fps() { return fps; }, renderer, scene, camera, get net() { return net; }, others } });
 
 const DT = tickDt();
 const camPos = new THREE.Vector3();
+const pivot = new THREE.Vector3();
 const fwd = new THREE.Vector3();
+const rightV = new THREE.Vector3();
 let acc = 0;
 let last = performance.now();
 let eye = eyeHeight(false);
-let fov = 75;
+let pivotY = 0;
+let fov = 72;
+let camDist = 2.8;
 
 function frame(now: number) {
-  const dt = Math.min(0.25, (now - last) / 1000);
-  acc += dt;
+  fpsFrames++;
+  const dt = Math.min(0.1, (now - last) / 1000);
+  acc += Math.min(0.25, dt);
   last = now;
-  while (acc >= DT) {
-    net.sendInput(input.sample());
-    acc -= DT;
+
+  if (net?.ready) {
+    while (acc >= DT) {
+      if (net.sendInput(input.sample()) && net.mode === 'slap') {
+        selfChar?.slap();
+        sfx.whoosh(0, 0.8);
+      }
+      acc -= DT;
+    }
+  } else acc = 0;
+
+  if (net?.ready && selfChar) {
+    const me = net.me;
+    selfChar.update({ x: me.x, y: me.y, z: me.z, vx: me.vx, vz: me.vz, yaw: input.yaw, pitch: input.pitch,
+      crouched: me.crouched, grounded: me.grounded, lean: me.lean, stun: me.stun, ko: me.ko }, dt);
+
+    const seen = new Set<number>();
+    for (const p of net.remotes()) {
+      seen.add(p.id);
+      let c = others.get(p.id);
+      if (!c) others.set(p.id, (c = new Character(scene, tints[p.id % tints.length])));
+      c.update(p, dt);
+      positions.set(p.id, new THREE.Vector3(p.x, p.y + 1.5, p.z));
+    }
+    for (const [id, c] of others) if (!seen.has(id)) { c.dispose(scene); others.delete(id); positions.delete(id); }
+
+    // Over-the-shoulder camera with lean offset, aim zoom and wall collision.
+    const aim = input.aiming;
+    eye += (eyeHeight(me.crouched) - eye) * Math.min(1, dt * 10);
+    pivotY = Math.abs(me.y - pivotY) > 0.6 ? me.y : pivotY + (me.y - pivotY) * Math.min(1, dt * 14);
+    fov += ((aim ? 48 : 72) - fov) * Math.min(1, dt * 12);
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+    const yaw = input.yaw, pitch = input.pitch;
+    fwd.set(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+    rightV.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    const ko = me.ko > 0;
+    pivot.set(me.x, pivotY + (ko ? 0.5 : eye), me.z).addScaledVector(rightV, (aim ? 0.42 : 0.55) + me.lean * 0.45);
+    const want = ko ? 4.5 : aim ? 1.3 : 2.8;
+    const back = fwd.clone().negate();
+    const hit = raycastBoxes(boxes, pivot, back, want, 0.2);
+    camDist = hit < camDist ? hit : camDist + (hit - camDist) * Math.min(1, dt * 6);
+    camPos.copy(pivot).addScaledVector(back, camDist);
+    camera.position.copy(camPos);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(camPos.clone().add(fwd));
+    camera.rotateZ(-me.lean * 0.06);
+    selfChar.visible = camDist > 0.55;
+
+    world.follow(me.x, me.z);
+
+    // HUD
+    const st = $('stamina');
+    (st.firstElementChild as HTMLElement).style.transform = `scaleX(${me.stamina})`;
+    st.classList.toggle('ex', me.exhausted);
+    ($('daze').firstElementChild as HTMLElement).style.transform = `scaleX(${me.daze / 100})`;
+    $('vignette').style.opacity = String(Math.min(1, me.daze / 100 + (me.stun > 0 ? 0.3 : 0)));
+    $('ko').classList.toggle('hidden', !ko);
+  } else {
+    // menu backdrop: slow orbit over the yard
+    const t = now / 1000 * 0.05;
+    camera.position.set(Math.sin(t) * 30, 14, Math.cos(t) * 30);
+    camera.lookAt(0, 1.5, 0);
+    world.follow(0, 0);
   }
-
-  const me = net.me;
-  self.position.set(me.x, me.y, me.z);
-  self.rotation.y = input.yaw;
-  self.scale.y = me.crouched ? 0.65 : 1;
-
-  const seen = new Set<number>();
-  for (const p of net.remotes()) {
-    seen.add(p.id);
-    let m = others.get(p.id);
-    if (!m) others.set(p.id, (m = makeBody(0x6b4a3a)));
-    m.position.set(p.x, p.y, p.z);
-    m.rotation.y = p.yaw;
-    m.scale.y = p.crouched ? 0.65 : 1;
-  }
-  for (const [id, m] of others) if (!seen.has(id)) { scene.remove(m); others.delete(id); }
-
-  // Over-the-shoulder camera: smooth crouch height, tighter and narrower when aiming.
-  eye += (eyeHeight(me.crouched) - eye) * Math.min(1, dt * 10);
-  const aim = input.aiming;
-  fov += ((aim ? 50 : 75) - fov) * Math.min(1, dt * 12);
-  camera.fov = fov;
-  camera.updateProjectionMatrix();
-  const dist = aim ? 1.4 : 2.8;
-  const shoulder = aim ? 0.45 : 0.6;
-  fwd.set(-Math.sin(input.yaw) * Math.cos(input.pitch), Math.sin(input.pitch), -Math.cos(input.yaw) * Math.cos(input.pitch));
-  camPos.set(me.x, me.y + eye, me.z)
-    .addScaledVector(fwd, -dist)
-    .add(new THREE.Vector3(Math.cos(input.yaw), 0, -Math.sin(input.yaw)).multiplyScalar(shoulder));
-  camPos.y = Math.max(0.2, camPos.y);
-  camera.position.copy(camPos);
-  camera.lookAt(camPos.clone().add(fwd));
-
-  sun.target.position.set(me.x, 0, me.z);
-  sun.position.copy(sunDir).multiplyScalar(80).add(sun.target.position);
 
   renderer.render(scene, camera);
   requestAnimationFrame(frame);

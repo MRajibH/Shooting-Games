@@ -5,13 +5,95 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
     <title>RIFTLINE</title>
     <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f23; font-family: system-ui, sans-serif; }
+      :root { --ink: #eef1f3; --dim: #a9b2ba; --panel: rgba(12, 16, 20, 0.62); --accent: #e3a33b; --bad: #d9473b; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #15191d; color: var(--ink);
+        font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
       canvas { display: block; }
-      #status { position: fixed; top: 12px; left: 12px; padding: 6px 10px; border-radius: 6px; background: #10202dcc; color: #fff; font-size: 13px; }
+      .hidden { display: none !important; }
+
+      #menu { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px;
+        background: radial-gradient(ellipse at center, rgba(10,13,16,.55), rgba(10,13,16,.9)); z-index: 10; }
+      #menu form { width: min(420px, 100%); background: var(--panel); backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 24px; box-sizing: border-box; }
+      #menu h1 { margin: 0 0 4px; font-size: 32px; letter-spacing: .18em; }
+      #menu p { margin: 0 0 20px; color: var(--dim); }
+      #menu label { display: block; margin: 12px 0 4px; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+      #menu input { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 6px; border: 1px solid #3a434b;
+        background: #0f1316; color: var(--ink); font-size: 15px; }
+      .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .modes label { margin: 0; text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--ink);
+        border: 1px solid #3a434b; border-radius: 6px; padding: 10px; cursor: pointer; }
+      .modes input { display: none; }
+      .modes label:has(input:checked) { border-color: var(--accent); background: rgba(227,163,59,.12); }
+      .modes small { display: block; color: var(--dim); }
+      #menu button { margin-top: 20px; width: 100%; padding: 12px; border: 0; border-radius: 6px; background: var(--accent);
+        color: #1a1408; font-weight: 700; font-size: 16px; letter-spacing: .1em; cursor: pointer; }
+      #menu .keys { margin-top: 16px; color: var(--dim); font-size: 12px; }
+
+      #hud { position: fixed; inset: 0; pointer-events: none; }
+      #crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px;
+        border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 0 2px #000; }
+      #hit { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; opacity: 0;
+        transition: opacity .25s; background:
+          linear-gradient(45deg, transparent 45%, #fff 45% 55%, transparent 55%),
+          linear-gradient(-45deg, transparent 45%, #fff 45% 55%, transparent 55%); }
+      #hit.on { opacity: 1; transition: none; }
+      #status { position: absolute; top: 12px; left: 12px; padding: 6px 10px; border-radius: 6px; background: var(--panel); color: var(--dim); font-size: 12px; }
+      #feed { position: absolute; top: 48px; left: 12px; display: grid; gap: 4px; }
+      #feed div { padding: 4px 8px; border-radius: 4px; background: var(--panel); font-size: 13px; }
+      #board { position: absolute; top: 12px; right: 12px; min-width: 190px; padding: 8px 10px; border-radius: 6px; background: var(--panel); font-size: 13px; }
+      #board table { width: 100%; border-collapse: collapse; }
+      #board th { color: var(--dim); font-weight: 500; text-align: right; font-size: 11px; }
+      #board th:first-child, #board td:first-child { text-align: left; }
+      #board td { text-align: right; padding: 2px 0; font-variant-numeric: tabular-nums; }
+      #board tr.me td { color: var(--accent); }
+      .bars { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); width: min(320px, 70vw); display: grid; gap: 6px; }
+      .bar { height: 6px; border-radius: 3px; background: rgba(0,0,0,.45); overflow: hidden; }
+      .bar i { display: block; height: 100%; width: 100%; transform-origin: left; }
+      #stamina i { background: #dfe6ea; }
+      #stamina.ex i { background: var(--bad); }
+      #daze i { background: linear-gradient(90deg, #e3a33b, #d9473b); }
+      .bar-label { font-size: 10px; letter-spacing: .1em; color: var(--dim); text-transform: uppercase; }
+      #vignette { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(120,10,10,.75)); }
+      #ko { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.45);
+        font-size: 42px; font-weight: 800; letter-spacing: .15em; text-align: center; }
+      #ko small { display: block; font-size: 14px; font-weight: 400; letter-spacing: .05em; color: var(--dim); }
+      #help { position: absolute; left: 12px; bottom: 12px; color: var(--dim); font-size: 11px; background: var(--panel); padding: 6px 8px; border-radius: 6px; }
     </style>
   </head>
   <body>
-    <div id="status">connecting…</div>
+    <div id="menu">
+      <form id="join">
+        <h1>RIFTLINE</h1>
+        <p>Realistic multiplayer arena. Runs in your browser.</p>
+        <label for="name">Callsign</label>
+        <input id="name" maxlength="16" autocomplete="off" placeholder="Operator" />
+        <label>Mode</label>
+        <div class="modes">
+          <label><input type="radio" name="mode" value="slap" checked />Slap Arena<small>Open hand only. Knock them out.</small></label>
+          <label><input type="radio" name="mode" value="combat" />Combat<small>Weapons arrive next milestone.</small></label>
+        </div>
+        <label for="room">Private room code (optional)</label>
+        <input id="room" maxlength="8" autocomplete="off" placeholder="Quick play" />
+        <button type="submit">DEPLOY</button>
+        <div class="keys">WASD move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse slap</div>
+      </form>
+    </div>
+
+    <div id="hud" class="hidden">
+      <div id="vignette"></div>
+      <div id="crosshair"></div>
+      <div id="hit"></div>
+      <div id="status">connecting…</div>
+      <div id="feed"></div>
+      <div id="board"></div>
+      <div class="bars">
+        <div id="daze-wrap"><div class="bar-label">Daze</div><div class="bar" id="daze"><i></i></div></div>
+        <div><div class="bar-label">Stamina</div><div class="bar" id="stamina"><i></i></div></div>
+      </div>
+      <div id="ko" class="hidden"><div>KNOCKED OUT<small>Getting back up…</small></div></div>
+      <div id="help">Click to capture mouse · Esc to release</div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

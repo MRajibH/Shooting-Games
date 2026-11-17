@@ -26,7 +26,7 @@ first draft (dash, double jump, jump pads, low-poly art) are dropped.
 | Map | flat arena | One realistic urban/industrial map: PBR materials, cover, interiors, sight lines, vertical play by stairs and ladders |
 | Rendering | flat neon | PBR, physical sky + sun, filmic tone mapping, soft shadows, SSAO, bloom, motion blur option, decals, muzzle flash and smoke particles |
 | Audio | basic | Positional audio, distance-delayed gunshots, reverb by environment, footsteps per surface |
-| Modes | FFA kill count | Team Deathmatch and Domination (capture points) |
+| Modes | FFA kill count | Slap Arena (open-hand melee: knockback, stagger, knockouts), Team Deathmatch, Domination (capture points) |
 | Empty servers | nobody to play | Server-side bots fill rooms, leave as humans join |
 | Fairness | client-trusting | Rust authoritative server, same Rust sim compiled to WASM for prediction, lag-compensated hits |
 | Platforms | desktop | Desktop + mobile touch (twin stick, aim assist) |
@@ -70,7 +70,7 @@ Key netcode rules:
 ## Build order (each milestone playable)
 
 1. **Skeleton** (done) — Rust workspace, Vite client, WASM prediction, rooms, reconciliation and interpolation, realistic movement constants and lighting baseline.
-2. **Movement + map** — capsule collision in Rust, the map with PBR materials, stairs, vaulting, lean, stamina, camera collision.
+2. **Movement + map + character + Slap mode** (done) — collision in Rust, the map with PBR materials, stairs, vaulting, lean, stamina, camera collision, rigged animated soldier with procedural layers, Slap Arena.
 3. **Combat** — four weapons, projectile ballistics with drop, recoil/sway/ADS, hitboxes and headshots, lag compensation, death and respawn.
 4. **Modes + rooms** — team deathmatch and domination, round flow, quick play and room codes, scoreboard and results.
 5. **Bots** — waypoint graph, combat behaviour, three difficulties, auto-fill.

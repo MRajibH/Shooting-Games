@@ -23,3 +23,39 @@ pub mod movement {
     pub const CROUCH_EYE_HEIGHT: f32 = 1.05;
     pub const MAX_PITCH: f32 = 1.48;
 }
+
+/// Player body (collision is an axis-aligned box of this footprint).
+pub mod body {
+    pub const RADIUS: f32 = 0.3;
+    pub const STAND_HEIGHT: f32 = 1.8;
+    pub const CROUCH_HEIGHT: f32 = 1.2;
+    /// Highest ledge walked up without jumping (stairs are 0.2 m).
+    pub const STEP_HEIGHT: f32 = 0.35;
+    /// Obstacles between these heights can be vaulted with Jump.
+    pub const VAULT_MIN: f32 = 0.45;
+    pub const VAULT_MAX: f32 = 1.25;
+    pub const LEAN_SPEED: f32 = 6.0;
+}
+
+/// Stamina is 0..1: about 5.5 s of sprinting from full.
+pub mod stamina {
+    pub const SPRINT_DRAIN: f32 = 0.18;
+    pub const REGEN: f32 = 0.22;
+    pub const JUMP_COST: f32 = 0.08;
+    /// After running dry, sprint unlocks again at this level.
+    pub const RECOVER: f32 = 0.35;
+}
+
+/// Slap mode: open-hand melee with knockback, stagger and knockouts.
+pub mod slap {
+    pub const RANGE: f32 = 1.8;
+    /// cos(55°): target must be inside this cone in front of the slapper.
+    pub const CONE_COS: f32 = 0.574;
+    pub const COOLDOWN: f32 = 0.65;
+    pub const KNOCKBACK: f32 = 6.5;
+    pub const LIFT: f32 = 2.2;
+    pub const STUN: f32 = 0.45;
+    pub const DAZE_PER_HIT: f32 = 34.0;
+    pub const DAZE_DECAY: f32 = 8.0;
+    pub const KO_TIME: f32 = 3.5;
+}

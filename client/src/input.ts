@@ -13,9 +13,9 @@ export class Input {
     addEventListener('keydown', (e) => this.keys.add(e.code));
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => { this.keys.clear(); this.mouse = 0; });
-    canvas.addEventListener('click', () => canvas.requestPointerLock());
+    canvas.addEventListener('click', () => canvas.requestPointerLock()?.catch?.(() => {}));
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-    addEventListener('mousedown', (e) => (this.mouse |= 1 << e.button));
+    addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas) this.mouse |= 1 << e.button; });
     addEventListener('mouseup', (e) => (this.mouse &= ~(1 << e.button)));
     addEventListener('mousemove', (e) => {
       if (document.pointerLockElement !== canvas) return;
@@ -34,6 +34,8 @@ export class Input {
     if (k('ShiftLeft')) buttons |= Button.Sprint;
     if (k('ControlLeft') || k('KeyC')) buttons |= Button.Crouch;
     if (k('KeyR')) buttons |= Button.Reload;
+    if (k('KeyQ')) buttons |= Button.LeanLeft;
+    if (k('KeyE')) buttons |= Button.LeanRight;
     if (this.mouse & 1) buttons |= Button.Fire;
     if (this.aiming) buttons |= Button.Aim;
     return {

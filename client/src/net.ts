@@ -1,9 +1,10 @@
 import { Predictor, interpDelayMs } from './wasm/riftline_sim.js';
-import type { ClientMessage, InputFrame, PlayerState, ServerMessage } from './protocol';
+import type { ClientMessage, GameEvent, InputFrame, Mode, PlayerState, RosterEntry, ServerMessage } from './protocol';
 
 interface Snap { time: number; players: Map<number, PlayerState>; }
 
 const send = (ws: WebSocket, m: ClientMessage) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
+const lerpAngle = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
 
 /**
  * Socket plus client-side prediction (the server's own Rust code, compiled to
@@ -12,44 +13,52 @@ const send = (ws: WebSocket, m: ClientMessage) => ws.readyState === WebSocket.OP
 export class Net {
   id = 0;
   room = '';
+  mode: Mode = 'combat';
   me = new Predictor(0);
+  roster: RosterEntry[] = [];
   onStatus: (s: string) => void = () => {};
+  onWelcome: () => void = () => {};
+  onEvent: (e: GameEvent) => void = () => {};
+  onRoster: () => void = () => {};
   private ws: WebSocket;
   private pending: InputFrame[] = [];
   private snaps: Snap[] = [];
   private readonly delay = interpDelayMs();
 
-  constructor(name: string, room?: string) {
+  constructor(name: string, room: string | undefined, mode: Mode) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     this.ws = new WebSocket(`${proto}://${location.host}/ws`);
-    this.ws.onopen = () => send(this.ws, { t: 'join', name, room });
+    this.ws.onopen = () => send(this.ws, { t: 'join', name, room, mode });
     this.ws.onmessage = (e) => this.handle(JSON.parse(e.data) as ServerMessage);
-    this.ws.onclose = () => this.onStatus('disconnected');
+    this.ws.onclose = () => this.onStatus('disconnected — reload to rejoin');
   }
 
   get ready() { return this.id !== 0; }
 
-  /** Apply an input locally right away and send it to the server. */
-  sendInput(f: InputFrame): void {
-    if (!this.ready) return;
-    this.step(f);
+  /** Apply an input locally right away and send it. Returns true if a slap was thrown. */
+  sendInput(f: InputFrame): boolean {
+    if (!this.ready) return false;
+    const slapped = this.step(f);
     this.pending.push(f);
     if (this.pending.length > 240) this.pending.shift();
     // resend the last few frames so one dropped packet does not lose input
     send(this.ws, { t: 'input', frames: this.pending.slice(-3) });
+    return slapped;
   }
 
   private step(f: InputFrame) {
-    this.me.step(f.seq, f.moveX, f.moveZ, f.yaw, f.pitch, f.buttons);
+    return this.me.step(f.seq, f.moveX, f.moveZ, f.yaw, f.pitch, f.buttons);
   }
 
   private handle(m: ServerMessage): void {
     if (m.t === 'welcome') {
       this.id = m.id;
       this.room = m.room;
+      this.mode = m.mode;
       this.me.free();
       this.me = new Predictor(m.id);
-      this.onStatus(`room ${m.room} · click to capture mouse · WASD · Shift sprint · C crouch · Space jump`);
+      this.onStatus(`${m.mode === 'slap' ? 'Slap Arena' : 'Combat'} · room ${m.room}`);
+      this.onWelcome();
     } else if (m.t === 'snapshot') {
       const players = new Map(m.players.map((p) => [p.id, p]));
       this.snaps.push({ time: performance.now(), players });
@@ -57,10 +66,14 @@ export class Net {
       const a = players.get(this.id);
       if (a) {
         // reconcile: take the server state, replay inputs it has not processed yet
-        this.me.set(a.x, a.y, a.z, a.vx, a.vy, a.vz, a.yaw, a.pitch, a.grounded, a.crouched);
+        this.me.setJson(JSON.stringify(a));
         this.pending = this.pending.filter((f) => f.seq > m.ack);
         for (const f of this.pending) this.step(f);
       }
+      for (const e of m.events) this.onEvent(e);
+    } else if (m.t === 'roster') {
+      this.roster = m.players;
+      this.onRoster();
     } else if (m.t === 'left') {
       for (const s of this.snaps) s.players.delete(m.id);
     }
@@ -80,14 +93,24 @@ export class Net {
     for (const [id, pa] of a.players) {
       if (id === this.id) continue;
       const pb = b.players.get(id) ?? pa;
+      const teleported = Math.hypot(pb.x - pa.x, pb.z - pa.z) > 4;
+      const kk = teleported ? 1 : k;
       out.push({
         ...pb,
-        x: pa.x + (pb.x - pa.x) * k,
-        y: pa.y + (pb.y - pa.y) * k,
-        z: pa.z + (pb.z - pa.z) * k,
-        yaw: pa.yaw + Math.atan2(Math.sin(pb.yaw - pa.yaw), Math.cos(pb.yaw - pa.yaw)) * k,
+        x: pa.x + (pb.x - pa.x) * kk,
+        y: pa.y + (pb.y - pa.y) * kk,
+        z: pa.z + (pb.z - pa.z) * kk,
+        vx: pa.vx + (pb.vx - pa.vx) * kk,
+        vz: pa.vz + (pb.vz - pa.vz) * kk,
+        lean: pa.lean + (pb.lean - pa.lean) * kk,
+        yaw: lerpAngle(pa.yaw, pb.yaw, kk),
+        pitch: pa.pitch + (pb.pitch - pa.pitch) * kk,
       });
     }
     return out;
+  }
+
+  nameOf(id: number) {
+    return this.roster.find((r) => r.id === id)?.name ?? `#${id}`;
   }
 }
