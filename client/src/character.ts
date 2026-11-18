@@ -127,7 +127,7 @@ export class Character {
   readonly muzzle = new THREE.Vector3();
   readonly aimDir = new THREE.Vector3(0, 0, -1);
 
-  constructor(scene: THREE.Scene, tint?: THREE.Color) {
+  constructor(scene: THREE.Scene, tint?: THREE.Color, strength = 0.35) {
     if (!gltf) throw new Error('loadCharacter() first');
     this.scene = scene;
     this.model = SkeletonUtils.clone(gltf.scene);
@@ -141,7 +141,7 @@ export class Character {
       m.frustumCulled = false;
       if (tint) {
         const mat = (m.material as THREE.MeshStandardMaterial).clone();
-        if (!/visor/i.test(m.name)) mat.color.copy(new THREE.Color(1, 1, 1).lerp(tint, 0.35));
+        if (!/visor/i.test(m.name)) mat.color.copy(new THREE.Color(1, 1, 1).lerp(tint, strength));
         m.material = mat;
       }
     });

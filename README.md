@@ -6,7 +6,24 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
 
 ## Status
 
-**Milestone 3 done: combat.** (Milestone 2: movement, map, character, Slap mode.)
+**Milestone 4 done: modes, match flow and AI players.** (3: combat. 2: movement, map, character, Slap mode.)
+
+- **Four modes:** Deathmatch (first to 25 kills), Team Deathmatch (Blue vs Red, first team to 50),
+  Domination (hold capture points A, B, C; one point per second per point held, first to 200),
+  Slap Arena (first to 10 knockouts). Every match is 10 minutes at most.
+- **Teams:** auto-balanced on join, team colours on the soldiers, teammates' names over their heads
+  (enemies get none), spawns on your own half, no friendly fire.
+- **Domination:** standing on a point alone takes it in 6 s (faster with teammates, frozen while
+  an enemy is on it too); flags and ground rings in the world, A / B / C markers with distance
+  on screen, ownership and capture progress in the match bar.
+- **Match flow:** match bar with clock and scores, results screen (victory / defeat / draw, final
+  score, MVP, full table) for 12 s, then a fresh match with everyone respawned.
+- **AI players:** whenever you are the only person in a room, two bots join; they leave as soon as
+  a second person arrives and come back if you are alone again. Bots use the same simulation as
+  players (speed, stamina, recoil, ammo, reloads), see only what is in line of sight, path around
+  the map on a navigation grid, react with a human delay, aim with an error that settles while they
+  track you, fire in bursts, strafe, capture points in Domination and slap in Slap Arena.
+
 
 - **Four weapons** (table in `crates/sim/src/weapons.rs`, shared by server and client):
 
@@ -65,7 +82,7 @@ Debug handle in the browser console: `__riftline` (fps, renderer, scene, net).
 | Path | Role |
 |---|---|
 | `crates/sim` | Shared Rust: constants, protocol, map, movement and collision, weapons, ballistics, hitboxes. Native for the server, WASM for the browser |
-| `crates/server` | axum + tokio: `/ws`, room registry, one task per room (bullets, lag-compensated hits, damage, respawn), serves `client/dist` |
+| `crates/server` | axum + tokio: `/ws`, room registry, one task per room (bullets, lag-compensated hits, damage, respawn, teams, match flow, capture points), `nav.rs` walkable grid + A*, `bots.rs` AI players, serves `client/dist` |
 | `client/` | Vite + three.js: menu, HUD, input (recoil, sway), netcode, world, character (weapon IK), guns, effects, audio. `src/wasm/` is generated |
 
 ## Requirements
@@ -90,4 +107,4 @@ npm run build && npm start  # one Rust binary on :8080 serving the game
 Open two tabs to see multiplayer. `?room=CODE&name=You` joins a private room.
 Controls: click to capture the mouse, WASD, Shift sprint, Space jump / vault, C / Ctrl crouch,
 Q / E lean, right mouse aim, left mouse fire (slap in Slap mode), 1–4 or wheel weapons, R reload,
-B fire mode, Shift while aimed holds breath. `?mode=combat|slap` preselects the mode.
+B fire mode, Shift while aimed holds breath. `?mode=combat|tdm|domination|slap` preselects the mode.

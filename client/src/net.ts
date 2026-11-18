@@ -1,5 +1,5 @@
 import { Predictor, interpDelayMs } from './wasm/riftline_sim.js';
-import type { ClientMessage, GameEvent, InputFrame, Mode, PlayerState, RosterEntry, ServerMessage } from './protocol';
+import type { ClientMessage, GameEvent, InputFrame, MatchState, Mode, PlayerState, RosterEntry, ServerMessage } from './protocol';
 
 interface Snap { time: number; tick: number; players: Map<number, PlayerState>; }
 
@@ -20,6 +20,8 @@ export class Net {
   /** Server tick of the interpolated world currently on screen. */
   viewTick = 0;
   roster: RosterEntry[] = [];
+  /** Latest match status from the server. */
+  game: MatchState | null = null;
   onStatus: (s: string) => void = () => {};
   onWelcome: () => void = () => {};
   onEvent: (e: GameEvent) => void = () => {};
@@ -68,6 +70,7 @@ export class Net {
       this.onStatus(`${m.mode === 'slap' ? 'Slap Arena' : 'Combat'} · room ${m.room}`);
       this.onWelcome();
     } else if (m.t === 'snapshot') {
+      this.game = m.game;
       const players = new Map(m.players.map((p) => [p.id, p]));
       this.snaps.push({ time: performance.now(), tick: m.tick, players });
       if (this.snaps.length > 60) this.snaps.shift();
@@ -126,5 +129,9 @@ export class Net {
 
   nameOf(id: number) {
     return this.roster.find((r) => r.id === id)?.name ?? `#${id}`;
+  }
+
+  teamOf(id: number) {
+    return this.roster.find((r) => r.id === id)?.team ?? 0;
   }
 }

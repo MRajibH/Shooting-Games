@@ -6,7 +6,7 @@ import { Fx } from './fx';
 import { spec, weapons } from './guns';
 import { Input } from './input';
 import { Flag, Net } from './net';
-import type { GameEvent, Mode, V3 } from './protocol';
+import type { GameEvent, MatchState, Mode, RosterEntry, V3 } from './protocol';
 import { buildWorld, parseBoxes, raycastBoxes } from './world';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -47,14 +47,21 @@ const roomEl = $<HTMLInputElement>('room');
 try { nameEl.value = params.get('name') ?? localStorage.getItem('riftline.name') ?? ''; } catch { /* storage blocked */ }
 roomEl.value = params.get('room') ?? '';
 const startMode = params.get('mode');
-if (startMode === 'combat' || startMode === 'slap') {
+if (startMode === 'combat' || startMode === 'tdm' || startMode === 'domination' || startMode === 'slap') {
   ($<HTMLInputElement>('join').querySelector(`input[value=${startMode}]`) as HTMLInputElement).checked = true;
 }
 
 let net: Net | null = null;
 let selfChar: Character | null = null;
-const others = new Map<number, Character>();
+let selfTeam = -1;
+const others = new Map<number, { c: Character; team: number }>();
 const tints = [0xc9d6ff, 0xffd0b0, 0xc6ffcf, 0xffc4d8, 0xfff2b0, 0xd6c8ff, 0xb8f4ff, 0xffffff].map((c) => new THREE.Color(c));
+/** Team 1 blue, team 2 red (index 0 unused). */
+const TEAM_HEX = ['#ffffff', '#4f8fe8', '#e8584a'];
+const TEAM_NAME = ['', 'Blue', 'Red'];
+const TEAM_COL = TEAM_HEX.map((h) => new THREE.Color(h));
+const newChar = (id: number, team: number) =>
+  team ? new Character(scene, TEAM_COL[team], 0.6) : new Character(scene, tints[id % tints.length]);
 
 $('join').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -70,6 +77,11 @@ $('join').addEventListener('submit', async (e) => {
 });
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+/** A player's name, coloured by team. */
+const who = (id: number) => {
+  const t = net?.teamOf(id) ?? 0;
+  return `<b style="color:${t ? TEAM_HEX[t] : 'inherit'}">${esc(net?.nameOf(id) ?? '')}</b>`;
+};
 const v3 = (a: V3) => new THREE.Vector3(a[0], a[1], a[2]);
 
 /** Who killed me, for the death screen. */
@@ -82,8 +94,7 @@ function start(name: string, room: string | undefined, mode: Mode) {
   net = new Net(name, room, mode);
   net.onStatus = (s) => ($('status').textContent = s);
   net.onWelcome = () => {
-    selfChar = new Character(scene, tints[net!.id % tints.length]);
-    const combat = net!.mode === 'combat';
+    const combat = net!.mode !== 'slap';
     $('daze-wrap').classList.toggle('hidden', combat);
     $('hp-wrap').classList.toggle('hidden', !combat);
     $('ammo').classList.toggle('hidden', !combat);
@@ -101,7 +112,7 @@ function onEvent(ev: GameEvent) {
   const me = net.id;
   switch (ev.t) {
     case 'slap': {
-      if (ev.from !== me) others.get(ev.from)?.slap();
+      if (ev.from !== me) others.get(ev.from)?.c.slap();
       if (ev.to != null) {
         const [pan, gain] = spatialId(ev.to === me ? null : ev.to);
         sfx.slapHit(pan, gain);
@@ -122,7 +133,7 @@ function onEvent(ev: GameEvent) {
     }
     case 'fire': {
       if (ev.id === me) break; // already shown when predicted
-      const c = others.get(ev.id);
+      const c = others.get(ev.id)?.c;
       c?.fire();
       const o = v3(ev.o), d = v3(ev.d);
       const from = c ? c.muzzle.clone() : o.clone();
@@ -163,10 +174,17 @@ function onEvent(ev: GameEvent) {
       }
       break;
     }
+    case 'capture': {
+      const letter = 'ABC'[ev.flag] ?? '?';
+      const mine = ev.team === net.me.team;
+      feed(`<b style="color:${TEAM_HEX[ev.team]}">${TEAM_NAME[ev.team]}</b> took <b>${letter}</b>`);
+      sfx.hitMarker(!mine, mine);
+      break;
+    }
     case 'kill': {
       const w = weapons()[ev.w]?.name ?? '';
       const tag = `<span class="w">${esc(w)}${ev.head ? ' · head' : ''}</span>`;
-      const n = (id: number) => (id === me ? 'You' : `<b>${esc(net!.nameOf(id))}</b>`);
+      const n = (id: number) => (id === me ? 'You' : who(id));
       feed(`${n(ev.from)} ${tag} ${ev.to === me ? 'you' : n(ev.to)}`);
       if (ev.from === me) { flashHit('kill'); sfx.hitMarker(ev.head, true); }
       if (ev.to === me) {
@@ -190,11 +208,39 @@ function closestApproach(a: THREE.Vector3, b: THREE.Vector3, p: THREE.Vector3) {
 
 function renderBoard() {
   if (!net) return;
-  const slap = net.mode === 'slap';
-  const head = slap ? '<th>KO</th><th>Slaps</th>' : '<th>K</th><th>D</th>';
-  const rows = net.roster.map((r) => `<tr class="${r.id === net!.id ? 'me' : ''}"><td>${esc(r.name)}</td>` +
-    (slap ? `<td>${r.kos}</td><td>${r.slaps}</td>` : `<td>${r.kills}</td><td>${r.deaths}</td>`) + '</tr>').join('');
-  $('board').innerHTML = `<table><tr><th>Player</th>${head}</tr>${rows}</table>`;
+  $('board').innerHTML = boardTable();
+  if (net.game?.phase === 'ended') renderResults(net.game);
+}
+
+/** Scoreboard rows, grouped by team in team modes. */
+function boardTable() {
+  if (!net) return '';
+  const mode = net.mode;
+  const cols: [string, (r: RosterEntry) => number][] =
+    mode === 'slap' ? [['KO', (r) => r.kos], ['Slaps', (r) => r.slaps]]
+      : mode === 'domination' ? [['K', (r) => r.kills], ['D', (r) => r.deaths], ['Caps', (r) => r.caps]]
+        : [['K', (r) => r.kills], ['D', (r) => r.deaths], ['Score', (r) => r.score]];
+  const row = (r: RosterEntry) => `<tr class="${r.id === net!.id ? 'me' : ''}">` +
+    `<td>${r.team ? `<i class="dot" style="background:${TEAM_HEX[r.team]}"></i>` : ''}${esc(r.name)}${r.bot ? ' <span class="bot">BOT</span>' : ''}</td>` +
+    cols.map(([, f]) => `<td>${f(r)}</td>`).join('') + '</tr>';
+  return `<table><tr><th>Player</th>${cols.map(([h]) => `<th>${h}</th>`).join('')}</tr>${net.roster.map(row).join('')}</table>`;
+}
+
+let resultsShown = false;
+function renderResults(g: MatchState) {
+  if (!net) return;
+  const myTeam = net.me.team;
+  let title: string;
+  if (net.mode === 'tdm' || net.mode === 'domination') {
+    title = g.winnerTeam === 0 ? 'DRAW' : g.winnerTeam === myTeam ? 'VICTORY' : 'DEFEAT';
+  } else {
+    title = g.winnerId === net.id ? 'YOU WIN' : g.winnerId ? `${esc(net.nameOf(g.winnerId))} WINS` : 'DRAW';
+  }
+  const scores = net.mode === 'tdm' || net.mode === 'domination'
+    ? `<div class="big"><span style="color:${TEAM_HEX[1]}">${g.scores[0]}</span> : <span style="color:${TEAM_HEX[2]}">${g.scores[1]}</span></div>` : '';
+  $('results').innerHTML = `<div class="card"><h2>${title}</h2>${scores}` +
+    (g.mvp ? `<p>MVP <b>${esc(net.nameOf(g.mvp))}</b></p>` : '') + boardTable() +
+    `<p class="next">Next match in <span id="next-in">${Math.ceil(g.nextIn)}</span></p></div>`;
 }
 
 function feed(html: string) {
@@ -315,6 +361,13 @@ function frame(now: number) {
     while (acc >= DT) { tick(); acc -= DT; }
   } else acc = 0;
 
+  // my character appears once the server has told me my team (and changes with it)
+  if (net?.ready && net.game && selfTeam !== net.me.team) {
+    selfChar?.dispose(scene);
+    selfChar = newChar(net.id, net.me.team);
+    selfTeam = net.me.team;
+  }
+
   if (net?.ready && selfChar) {
     const me = net.me;
     const armed = me.armed;
@@ -327,12 +380,16 @@ function frame(now: number) {
     const seen = new Set<number>();
     for (const p of net.remotes()) {
       seen.add(p.id);
-      let c = others.get(p.id);
-      if (!c) others.set(p.id, (c = new Character(scene, tints[p.id % tints.length])));
-      c.update(p, dt);
+      let o = others.get(p.id);
+      if (!o || o.team !== p.team) {
+        o?.c.dispose(scene);
+        o = { c: newChar(p.id, p.team), team: p.team };
+        others.set(p.id, o);
+      }
+      o.c.update(p, dt);
       positions.set(p.id, new THREE.Vector3(p.x, p.y + 1.5, p.z));
     }
-    for (const [id, c] of others) if (!seen.has(id)) { c.dispose(scene); others.delete(id); positions.delete(id); }
+    for (const [id, o] of others) if (!seen.has(id)) { o.c.dispose(scene); others.delete(id); positions.delete(id); }
 
     // Over-the-shoulder camera. Its aim ray passes through the point shots leave
     // from (beside the head, SHOULDER metres right), so the crosshair is exact.
@@ -411,6 +468,8 @@ function frame(now: number) {
       h.el.style.transform = `rotate(${ang}rad)`;
       h.el.style.opacity = String(1 - h.age / 2);
     }
+    if (net.game) matchHud(net.game, now / 1000);
+    nameTags(me.team);
   } else {
     // menu backdrop: slow orbit over the yard
     const t = now / 1000 * 0.05;
@@ -425,5 +484,122 @@ function frame(now: number) {
 }
 
 function aimFovSlap(ads: number) { return 72 - 24 * ads; }
+
+// ---- match HUD, capture points, team name tags ----
+
+const FLAG_RADIUS = 4;
+const flagObjs: { cloth: THREE.Mesh; ring: THREE.Mesh; fill: THREE.Mesh; el: HTMLElement; x: number; z: number }[] = [];
+const fmtTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const project = (p: THREE.Vector3) => {
+  const v = p.clone().project(camera);
+  return v.z < 1 && Math.abs(v.x) < 1.2 && Math.abs(v.y) < 1.2 ? [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight] : null;
+};
+
+function buildFlags(g: MatchState) {
+  const steel = new THREE.MeshStandardMaterial({ color: 0x8a8f94, roughness: 0.4, metalness: 0.8 });
+  g.flags.forEach((f, i) => {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 3.4, 10), steel);
+    pole.position.set(f.x, 1.7, f.z);
+    pole.castShadow = true;
+    const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.7, 8, 4),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, side: THREE.DoubleSide }));
+    cloth.geometry.translate(0.55, 0, 0);
+    cloth.position.set(f.x + 0.04, 3.0, f.z);
+    cloth.castShadow = true;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(FLAG_RADIUS - 0.12, FLAG_RADIUS, 64),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(f.x, 0.03, f.z);
+    const fill = new THREE.Mesh(new THREE.CircleGeometry(FLAG_RADIUS - 0.12, 64),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08, depthWrite: false }));
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.set(f.x, 0.025, f.z);
+    scene.add(pole, cloth, ring, fill);
+    const el = document.createElement('div');
+    el.className = 'flagtag';
+    el.textContent = 'ABC'[i]!;
+    $('tags').append(el);
+    flagObjs.push({ cloth, ring, fill, el, x: f.x, z: f.z });
+  });
+}
+
+function matchHud(g: MatchState, t: number) {
+  if (!net) return;
+  if (!flagObjs.length && g.flags.length) buildFlags(g);
+  const teams = net.mode === 'tdm' || net.mode === 'domination';
+  const myTeam = net.me.team;
+  let html: string;
+  if (teams) {
+    const side = (k: 1 | 2) => `<span class="ts${myTeam === k ? ' mine' : ''}" style="color:${TEAM_HEX[k]}">${g.scores[k - 1]}</span>`;
+    html = `${side(1)}<span class="clock">${fmtTime(g.timeLeft)}<small>first to ${g.limit}</small></span>${side(2)}`;
+    if (g.flags.length) {
+      html += '<div class="flags">' + g.flags.map((f, i) => {
+        const col = f.owner ? TEAM_HEX[f.owner] : 'rgba(255,255,255,.15)';
+        const pc = Math.abs(f.progress) * 100;
+        const toward = f.progress < 0 ? TEAM_HEX[1] : TEAM_HEX[2];
+        return `<span style="border-color:${col}"><i style="width:${pc}%;background:${toward}"></i><b>${'ABC'[i]}</b></span>`;
+      }).join('') + '</div>';
+    }
+  } else {
+    const val = (r: RosterEntry) => (net!.mode === 'slap' ? r.kos : r.kills);
+    const mine = net.roster.find((r) => r.id === net!.id);
+    const lead = net.roster.filter((r) => r.id !== net!.id).reduce((m, r) => Math.max(m, val(r)), 0);
+    html = `<span class="ts mine">${mine ? val(mine) : 0}</span><span class="clock">${fmtTime(g.timeLeft)}<small>first to ${g.limit}</small></span><span class="ts" title="leader">${lead}</span>`;
+  }
+  const bar = $('matchbar');
+  if (bar.dataset.html !== html) { bar.innerHTML = html; bar.dataset.html = html; }
+
+  // capture points in the world and on screen
+  flagObjs.forEach((o, i) => {
+    const f = g.flags[i];
+    if (!f) return;
+    const owner = f.owner ? TEAM_COL[f.owner]! : new THREE.Color(0xdddddd);
+    (o.cloth.material as THREE.MeshStandardMaterial).color.copy(owner);
+    (o.ring.material as THREE.MeshBasicMaterial).color.copy(f.progress < 0 ? TEAM_COL[1]! : f.progress > 0 ? TEAM_COL[2]! : owner);
+    (o.fill.material as THREE.MeshBasicMaterial).color.copy(owner);
+    o.cloth.rotation.y = Math.sin(t * 1.3 + i) * 0.25;
+    const pos = project(new THREE.Vector3(o.x, 3.9, o.z));
+    o.el.style.display = pos ? '' : 'none';
+    if (pos) {
+      o.el.style.transform = `translate(${pos[0]}px, ${pos[1]}px)`;
+      o.el.style.borderColor = f.owner ? TEAM_HEX[f.owner]! : '#ddd';
+      o.el.dataset.d = `${Math.round(Math.hypot(o.x - net!.me.x, o.z - net!.me.z))} m`;
+    }
+  });
+
+  // results screen
+  const ended = g.phase === 'ended';
+  $('results').classList.toggle('hidden', !ended);
+  if (ended && !resultsShown) renderResults(g);
+  resultsShown = ended;
+  const n = document.getElementById('next-in');
+  if (ended && n) n.textContent = String(Math.ceil(g.nextIn));
+}
+
+/** Teammates' names over their heads (enemies get none, like real life). */
+const tagEls = new Map<number, HTMLElement>();
+function nameTags(myTeam: number) {
+  if (!net) return;
+  const live = new Set<number>();
+  if (myTeam) {
+    for (const p of net.remotes()) {
+      if (p.team !== myTeam || p.dead > 0) continue;
+      const pos = project(new THREE.Vector3(p.x, p.y + (p.crouched ? 1.55 : 2.1), p.z));
+      if (!pos) continue;
+      live.add(p.id);
+      let el = tagEls.get(p.id);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'nametag';
+        $('tags').append(el);
+        tagEls.set(p.id, el);
+      }
+      el.textContent = net.nameOf(p.id);
+      el.style.color = TEAM_HEX[myTeam]!;
+      el.style.transform = `translate(${pos[0]}px, ${pos[1]}px)`;
+    }
+  }
+  for (const [id, el] of tagEls) if (!live.has(id)) { el.remove(); tagEls.delete(id); }
+}
 
 requestAnimationFrame(frame);

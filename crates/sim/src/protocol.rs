@@ -62,6 +62,9 @@ pub struct PlayerState {
     /// 0..100; a knockout at 100.
     pub daze: f32,
 
+    /// 0 in free-for-all modes, else 1 or 2.
+    pub team: u8,
+
     // ---- combat ----
     /// False in Slap mode (empty hands).
     pub armed: bool,
@@ -96,9 +99,65 @@ pub struct PlayerState {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    /// Free-for-all deathmatch.
     #[default]
     Combat,
+    /// Team deathmatch.
+    Tdm,
+    /// Two teams hold three capture points.
+    Domination,
     Slap,
+}
+
+impl Mode {
+    pub fn armed(self) -> bool {
+        self != Mode::Slap
+    }
+    pub fn teams(self) -> bool {
+        matches!(self, Mode::Tdm | Mode::Domination)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    #[default]
+    Playing,
+    /// Results on screen; the next match starts when `next_in` reaches 0.
+    Ended,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagState {
+    pub x: f32,
+    pub z: f32,
+    /// 0 neutral, 1 or 2 owning team.
+    pub owner: u8,
+    /// -1 (team 1 holds it fully) .. 1 (team 2).
+    pub progress: f32,
+}
+
+/// Match status, sent with every snapshot.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchState {
+    pub phase: Phase,
+    /// Seconds left in the match.
+    pub time_left: f32,
+    /// Score that wins (kills, team kills, domination points or knockouts).
+    pub limit: u32,
+    /// Team scores (team modes).
+    pub scores: [u32; 2],
+    pub flags: Vec<FlagState>,
+    /// Winning team (team modes), or 0.
+    pub winner_team: u8,
+    /// Winning player (free-for-all modes), or 0.
+    pub winner_id: u32,
+    /// Most valuable player of the finished match, or 0.
+    pub mvp: u32,
+    /// Seconds until the next match while `phase` is Ended.
+    pub next_in: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -144,6 +203,11 @@ pub enum GameEvent {
         head: bool,
         dist: f32,
     },
+    /// A team took a capture point.
+    Capture {
+        flag: u8,
+        team: u8,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -154,6 +218,11 @@ pub struct RosterEntry {
     pub kos: u32,
     pub kills: u32,
     pub deaths: u32,
+    /// Capture points taken.
+    pub caps: u32,
+    pub score: u32,
+    pub team: u8,
+    pub bot: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,6 +254,7 @@ pub enum ServerMessage {
         ack: u32,
         players: Vec<PlayerState>,
         events: Vec<GameEvent>,
+        game: MatchState,
     },
     Roster {
         players: Vec<RosterEntry>,

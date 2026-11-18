@@ -74,3 +74,21 @@ pub mod combat {
     /// Bullets are dropped after this long in flight.
     pub const BULLET_LIFE: f32 = 2.5;
 }
+
+/// Match rules per mode.
+pub mod rules {
+    pub const FFA_KILLS: u32 = 25;
+    pub const TDM_KILLS: u32 = 50;
+    pub const DOM_POINTS: u32 = 200;
+    pub const SLAP_KOS: u32 = 10;
+    /// Match length in seconds.
+    pub const MATCH_TIME: f32 = 600.0;
+    /// Results screen before the next match.
+    pub const RESULTS_TIME: f32 = 12.0;
+    /// Capture points: radius, seconds to take one alone, points per second per point held.
+    pub const FLAG_RADIUS: f32 = 4.0;
+    pub const CAPTURE_TIME: f32 = 6.0;
+    pub const POINTS_EVERY: f32 = 1.0;
+    /// Bots keep a lone player company; they leave when a second person joins.
+    pub const BOTS_FOR_LONE_PLAYER: usize = 2;
+}

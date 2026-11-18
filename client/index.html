@@ -64,6 +64,34 @@
       #hp i { background: #dfe6ea; }
       #hp.low i { background: var(--bad); }
       #feed .w { color: var(--dim); font-size: 11px; padding: 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+      #matchbar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap;
+        align-items: center; justify-content: center; gap: 10px; padding: 6px 14px; border-radius: 8px; background: var(--panel); max-width: 60vw; }
+      #matchbar .ts { font-size: 22px; font-weight: 800; min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
+      #matchbar .ts.mine { text-decoration: underline; text-underline-offset: 5px; }
+      #matchbar .clock { font-size: 15px; font-variant-numeric: tabular-nums; text-align: center; }
+      #matchbar .clock small { display: block; font-size: 10px; color: var(--dim); }
+      #matchbar .flags { flex-basis: 100%; display: flex; justify-content: center; gap: 6px; }
+      #matchbar .flags span { position: relative; width: 30px; height: 22px; border: 2px solid; border-radius: 4px; overflow: hidden;
+        display: grid; place-items: center; background: rgba(0,0,0,.3); }
+      #matchbar .flags i { position: absolute; left: 0; bottom: 0; height: 4px; }
+      #matchbar .flags b { position: relative; font-size: 12px; }
+      #tags { position: absolute; inset: 0; overflow: hidden; }
+      .flagtag, .nametag { position: absolute; left: 0; top: 0; white-space: nowrap; text-shadow: 0 1px 2px #000; }
+      .flagtag { margin: -14px 0 0 -14px; width: 24px; height: 24px; border: 2px solid #ddd; border-radius: 50%;
+        display: grid; place-items: center; font-weight: 800; font-size: 13px; background: rgba(0,0,0,.35); }
+      .flagtag::after { content: attr(data-d); position: absolute; top: 26px; font-size: 10px; font-weight: 400; color: var(--dim); }
+      .nametag { font-size: 12px; font-weight: 600; transform-origin: 0 0; margin-left: -20px; }
+      #board .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+      .bot { font-size: 9px; color: var(--dim); border: 1px solid #555; border-radius: 3px; padding: 0 3px; vertical-align: 1px; }
+      #results { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(5,7,9,.62); z-index: 2; }
+      #results .card { min-width: min(420px, 90vw); padding: 20px 24px; border-radius: 10px; background: var(--panel); text-align: center; }
+      #results h2 { margin: 0 0 6px; font-size: 38px; letter-spacing: .15em; }
+      #results .big { font-size: 30px; font-weight: 800; margin-bottom: 6px; }
+      #results table { width: 100%; border-collapse: collapse; margin-top: 10px; text-align: right; }
+      #results td, #results th { padding: 3px 4px; } #results td:first-child, #results th:first-child { text-align: left; }
+      #results tr.me td { color: var(--accent); }
+      #results .next { color: var(--dim); margin: 12px 0 0; }
+      .modes { grid-template-columns: 1fr 1fr; }
       @media (max-width: 600px) { #help, #board { display: none; } #mag { font-size: 26px; } }
       #hit { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; opacity: 0;
         transition: opacity .25s; background:
@@ -107,18 +135,23 @@
         <input id="name" maxlength="16" autocomplete="off" placeholder="Operator" />
         <label>Mode</label>
         <div class="modes">
-          <label><input type="radio" name="mode" value="combat" checked />Combat<small>Four weapons, real ballistics.</small></label>
-          <label><input type="radio" name="mode" value="slap" />Slap Arena<small>Open hand only. Knock them out.</small></label>
+          <label><input type="radio" name="mode" value="combat" checked />Deathmatch<small>Everyone for themselves. First to 25.</small></label>
+          <label><input type="radio" name="mode" value="tdm" />Team Deathmatch<small>Blue vs Red. First team to 50.</small></label>
+          <label><input type="radio" name="mode" value="domination" />Domination<small>Hold points A, B, C. First to 200.</small></label>
+          <label><input type="radio" name="mode" value="slap" />Slap Arena<small>Open hand only. First to 10 KOs.</small></label>
         </div>
         <label for="room">Private room code (optional)</label>
         <input id="room" maxlength="8" autocomplete="off" placeholder="Quick play" />
         <button type="submit">DEPLOY</button>
+        <div class="keys">Playing alone? Two AI soldiers join you until another person arrives.</div>
         <div class="keys">WASD move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse fire / slap · 1–4 weapons · R reload</div>
       </form>
     </div>
 
     <div id="hud" class="hidden">
       <div id="vignette"></div>
+      <div id="tags"></div>
+      <div id="matchbar"></div>
       <div id="scope" class="hidden"></div>
       <div id="xh" class="aimed"><i></i><i></i><i></i><i></i><b></b></div>
       <div id="hit"></div>
@@ -134,6 +167,7 @@
       </div>
       <div id="ammo" class="hidden"><div><b id="mag">0</b><span id="res">/ 0</span></div><div id="wname"></div>
         <div id="slots"><span>1</span><span>2</span><span>3</span><span>4</span></div></div>
+      <div id="results" class="hidden"></div>
       <div id="ko" class="hidden"><div>KNOCKED OUT<small>Getting back up…</small></div></div>
       <div id="help">Click to capture mouse · Esc to release</div>
     </div>

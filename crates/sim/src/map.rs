@@ -114,3 +114,40 @@ pub fn spawn(i: usize) -> (f32, f32, f32) {
 pub fn spawn_count() -> usize {
     SPAWNS.len()
 }
+
+/// Which team's half a spawn point is on (team 1 south-west, team 2 north-east).
+pub fn spawn_side(i: usize) -> u8 {
+    let (x, z) = SPAWNS[i % SPAWNS.len()];
+    if x - z < 0.0 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Domination capture points A, B, C: one near each team's half and one in the middle.
+pub const FLAGS: [(f32, f32); 3] = [(-17.0, 12.0), (0.0, 0.0), (17.0, -12.0)];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_points_are_open_ground() {
+        for (x, z) in FLAGS {
+            for b in boxes() {
+                let inside = x > b.min[0] - 1.0
+                    && x < b.max[0] + 1.0
+                    && z > b.min[2] - 1.0
+                    && z < b.max[2] + 1.0;
+                assert!(!inside || b.min[1] > 2.0, "flag at {x},{z} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_team_has_four_spawns() {
+        let ones = (0..spawn_count()).filter(|&i| spawn_side(i) == 1).count();
+        assert_eq!(ones, 4);
+    }
+}

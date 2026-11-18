@@ -3,11 +3,16 @@
 use std::collections::{HashMap, VecDeque};
 
 use riftline_sim::ballistics::{point, ray_player, raycast_map, Bullet, Zone};
-use riftline_sim::constants::{combat, slap, MAX_REWIND_MS, SNAPSHOT_RATE, TICK_DT, TICK_RATE};
+use riftline_sim::constants::{
+    combat, rules, slap, MAX_REWIND_MS, SNAPSHOT_RATE, TICK_DT, TICK_RATE,
+};
 use riftline_sim::map;
 use riftline_sim::protocol::{
-    GameEvent, InputFrame, Mode, PlayerState, RosterEntry, ServerMessage,
+    FlagState, GameEvent, InputFrame, MatchState, Mode, Phase, PlayerState, RosterEntry,
+    ServerMessage,
 };
+
+use crate::bots::{self, Brain, View};
 use riftline_sim::sim::{spawn_state, step_player};
 
 /// Input frames buffered beyond this are run two per tick until the backlog clears.
@@ -36,6 +41,48 @@ struct Slot {
     kos: u32,
     kills: u32,
     deaths: u32,
+    caps: u32,
+    /// Some for an AI player.
+    brain: Option<Box<Brain>>,
+}
+
+impl Slot {
+    fn score(&self, mode: Mode) -> u32 {
+        if mode == Mode::Slap {
+            self.kos * 100 + self.slaps * 10
+        } else {
+            self.kills * 100 + self.caps * 150
+        }
+    }
+}
+
+/// Bot ids live far above the ids handed to connections.
+const FIRST_BOT_ID: u32 = 1_000_000;
+
+fn fresh_match(mode: Mode) -> MatchState {
+    MatchState {
+        phase: Phase::Playing,
+        time_left: rules::MATCH_TIME,
+        limit: match mode {
+            Mode::Combat => rules::FFA_KILLS,
+            Mode::Tdm => rules::TDM_KILLS,
+            Mode::Domination => rules::DOM_POINTS,
+            Mode::Slap => rules::SLAP_KOS,
+        },
+        flags: if mode == Mode::Domination {
+            map::FLAGS
+                .iter()
+                .map(|&(x, z)| FlagState {
+                    x,
+                    z,
+                    ..Default::default()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
+    }
 }
 
 pub struct Game {
@@ -50,6 +97,9 @@ pub struct Game {
     bullets: Vec<Bullet>,
     /// Player states after each recent tick, newest last, for rewinding hitboxes.
     history: VecDeque<(u64, Vec<PlayerState>)>,
+    game: MatchState,
+    point_acc: f32,
+    next_bot: u32,
 }
 
 impl Game {
@@ -65,27 +115,113 @@ impl Game {
             roster_dirty: false,
             bullets: Vec::new(),
             history: VecDeque::new(),
+            game: fresh_match(mode),
+            point_acc: 0.0,
+            next_bot: FIRST_BOT_ID,
         }
     }
 
+    /// No people left (bots alone do not keep a room open).
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        self.humans() == 0
     }
 
-    /// Spawn at the point farthest from everyone alive (round-robin when alone).
-    fn spawn(&mut self, id: u32) -> PlayerState {
+    fn humans(&self) -> usize {
+        self.slots.values().filter(|s| s.brain.is_none()).count()
+    }
+
+    /// The smaller team (team 1 on a tie), or 0 in free-for-all modes.
+    fn pick_team(&self) -> u8 {
+        if !self.mode.teams() {
+            return 0;
+        }
+        let n = |t: u8| self.slots.values().filter(|s| s.state.team == t).count();
+        if n(2) < n(1) {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn add_player(&mut self, id: u32, name: String, out: Outbox, brain: Option<Box<Brain>>) {
+        let team = self.pick_team();
+        let state = self.spawn(id, team);
+        self.slots.insert(
+            id,
+            Slot {
+                name,
+                out,
+                state,
+                queue: Vec::new(),
+                last: None,
+                ack: 0,
+                slaps: 0,
+                kos: 0,
+                kills: 0,
+                deaths: 0,
+                caps: 0,
+                brain,
+            },
+        );
+        self.roster_dirty = true;
+    }
+
+    /// A lone person gets AI company; bots leave as soon as a second person is here.
+    fn fill_bots(&mut self) {
+        let humans = self.humans();
+        let want = if humans == 1 {
+            rules::BOTS_FOR_LONE_PLAYER
+        } else {
+            0
+        };
+        let mut bots: Vec<u32> = self
+            .slots
+            .iter()
+            .filter(|(_, s)| s.brain.is_some())
+            .map(|(&k, _)| k)
+            .collect();
+        bots.sort_unstable();
+        while bots.len() > want {
+            let id = bots.pop().unwrap();
+            self.slots.remove(&id);
+            self.broadcast(&ServerMessage::Left { id });
+            self.roster_dirty = true;
+        }
+        while bots.len() < want {
+            let id = self.next_bot;
+            self.next_bot += 1;
+            let used: Vec<&str> = self.slots.values().map(|s| s.name.as_str()).collect();
+            let name = bots::NAMES
+                .iter()
+                .find(|n| !used.contains(n))
+                .map_or_else(|| format!("Bot-{id}"), |n| n.to_string());
+            // nobody listens to a bot's outbox
+            let (out, _) = tokio::sync::mpsc::unbounded_channel();
+            self.add_player(id, name, out, Some(Box::new(Brain::new(id))));
+            bots.push(id);
+        }
+    }
+
+    /// Spawn at the point farthest from living enemies (round-robin when alone);
+    /// in team modes only on the team's own half.
+    fn spawn(&mut self, id: u32, team: u8) -> PlayerState {
         let living: Vec<(f32, f32)> = self
             .slots
             .iter()
-            .filter(|(&k, s)| k != id && s.state.dead <= 0.0)
+            .filter(|(&k, s)| k != id && s.state.dead <= 0.0 && (team == 0 || s.state.team != team))
             .map(|(_, s)| (s.state.x, s.state.z))
             .collect();
         let n = map::spawn_count();
+        let side = |i: &usize| team == 0 || map::spawn_side(*i) == team;
         let pick = if living.is_empty() {
-            self.next_spawn % n
+            (0..n)
+                .map(|k| (k + self.next_spawn) % n)
+                .find(side)
+                .unwrap_or(0)
         } else {
             (0..n)
                 .map(|k| (k + self.next_spawn) % n)
+                .filter(side)
                 .max_by(|&a, &b| {
                     let near = |i: usize| {
                         let (x, z, _) = map::spawn(i);
@@ -99,7 +235,9 @@ impl Game {
                 .unwrap_or(0)
         };
         self.next_spawn += 1;
-        spawn_state(id, pick, self.mode == Mode::Combat)
+        let mut s = spawn_state(id, pick, self.mode.armed());
+        s.team = team;
+        s
     }
 
     pub fn handle(&mut self, ev: RoomEvent) {
@@ -114,23 +252,8 @@ impl Game {
                         mode: self.mode,
                     },
                 );
-                let state = self.spawn(id);
-                self.slots.insert(
-                    id,
-                    Slot {
-                        name,
-                        out,
-                        state,
-                        queue: Vec::new(),
-                        last: None,
-                        ack: 0,
-                        slaps: 0,
-                        kos: 0,
-                        kills: 0,
-                        deaths: 0,
-                    },
-                );
-                self.roster_dirty = true;
+                self.add_player(id, name, out, None);
+                self.fill_bots();
             }
             RoomEvent::Input { id, frames } => {
                 let Some(s) = self.slots.get_mut(&id) else {
@@ -148,6 +271,7 @@ impl Game {
                 if self.slots.remove(&id).is_some() {
                     self.broadcast(&ServerMessage::Left { id });
                     self.roster_dirty = true;
+                    self.fill_bots();
                 }
             }
         }
@@ -158,6 +282,22 @@ impl Game {
         let mut slappers = Vec::new();
         let mut respawns = Vec::new();
         let mut volleys = Vec::new();
+
+        // bots decide this tick's input from what they can see
+        let states: Vec<PlayerState> = self.slots.values().map(|s| s.state.clone()).collect();
+        let view = View {
+            players: &states,
+            mode: self.mode,
+            flags: &self.game.flags,
+            dt: TICK_DT,
+        };
+        for s in self.slots.values_mut() {
+            if let Some(b) = s.brain.as_mut() {
+                let f = b.think(&s.state, &view);
+                s.queue.clear();
+                s.queue.push(f);
+            }
+        }
         for (&id, s) in self.slots.iter_mut() {
             // One input per tick; repeat the last one if the client's packet is late,
             // and run an extra one when frames pile up so latency cannot build up.
@@ -192,7 +332,8 @@ impl Game {
             }
         }
         for id in respawns {
-            let fresh = self.spawn(id);
+            let team = self.slots.get(&id).map_or(0, |s| s.state.team);
+            let fresh = self.spawn(id, team);
             if let Some(s) = self.slots.get_mut(&id) {
                 s.state = fresh;
             }
@@ -225,6 +366,7 @@ impl Game {
             }
         }
         self.fly_bullets();
+        self.update_match(TICK_DT);
 
         if self.roster_dirty {
             self.roster_dirty = false;
@@ -238,14 +380,18 @@ impl Game {
                     kos: s.kos,
                     kills: s.kills,
                     deaths: s.deaths,
+                    caps: s.caps,
+                    score: s.score(self.mode),
+                    team: s.state.team,
+                    bot: s.brain.is_some(),
                 })
                 .collect();
             players.sort_by(|a, b| {
-                b.kos
-                    .cmp(&a.kos)
-                    .then(b.slaps.cmp(&a.slaps))
-                    .then(b.kills.cmp(&a.kills))
+                a.team
+                    .cmp(&b.team)
+                    .then(b.score.cmp(&a.score))
                     .then(a.deaths.cmp(&b.deaths))
+                    .then(a.id.cmp(&b.id))
             });
             self.broadcast(&ServerMessage::Roster { players });
         }
@@ -265,6 +411,7 @@ impl Game {
                     ack: s.ack,
                     players: players.clone(),
                     events: events.clone(),
+                    game: self.game.clone(),
                 },
             );
         }
@@ -290,9 +437,11 @@ impl Game {
             let wall = raycast_map(o, d, l);
             let max = wall.map_or(l, |h| h.t);
             let mut hit: Option<(u32, f32, Zone)> = None;
+            let team = self.slots.get(&b.owner).map_or(0, |s| s.state.team);
             if let Some(states) = self.past(b.rewind) {
                 for t in states {
-                    if t.id == b.owner {
+                    // no friendly fire: rounds pass teammates
+                    if t.id == b.owner || (team != 0 && t.team == team) {
                         continue;
                     }
                     if let Some((at, zone)) = ray_player(o, d, max, t) {
@@ -325,6 +474,9 @@ impl Game {
     }
 
     fn damage(&mut self, from: u32, to: u32, w: u8, dmg: f32, zone: Zone, p: [f32; 3]) {
+        if self.game.phase != Phase::Playing {
+            return;
+        }
         let shooter = self.slots.get(&from).map(|s| (s.state.x, s.state.z));
         let Some(t) = self.slots.get_mut(&to) else {
             return;
@@ -352,6 +504,9 @@ impl Game {
         t.deaths += 1;
         if let Some(s) = self.slots.get_mut(&from) {
             s.kills += 1;
+            if self.mode == Mode::Tdm && s.state.team > 0 {
+                self.game.scores[s.state.team as usize - 1] += 1;
+            }
         }
         self.events.push(GameEvent::Kill {
             from,
@@ -366,6 +521,9 @@ impl Game {
     /// Nearest standing player inside the slapper's reach and frontal cone gets
     /// knocked back, staggered and dazed; full daze is a knockout.
     fn resolve_slap(&mut self, from: u32) {
+        if self.game.phase != Phase::Playing {
+            return;
+        }
         let Some(a) = self.slots.get(&from).map(|s| s.state.clone()) else {
             return;
         };
@@ -416,6 +574,147 @@ impl Game {
             self.events.push(GameEvent::Ko { from, to });
         }
         self.roster_dirty = true;
+    }
+
+    /// Clock, capture points, win check, results screen and the next match.
+    fn update_match(&mut self, dt: f32) {
+        if self.game.phase == Phase::Ended {
+            self.game.next_in -= dt;
+            if self.game.next_in <= 0.0 {
+                self.new_match();
+            }
+            return;
+        }
+        self.game.time_left = (self.game.time_left - dt).max(0.0);
+        if self.mode == Mode::Domination {
+            self.update_flags(dt);
+        }
+        let limit = self.game.limit;
+        let best = self
+            .slots
+            .iter()
+            .map(|(&id, s)| {
+                (
+                    id,
+                    if self.mode == Mode::Slap {
+                        s.kos
+                    } else {
+                        s.kills
+                    },
+                )
+            })
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
+        let [t1, t2] = self.game.scores;
+        let over = self.game.time_left <= 0.0
+            || if self.mode.teams() {
+                t1 >= limit || t2 >= limit
+            } else {
+                best.is_some_and(|b| b.1 >= limit)
+            };
+        if !over {
+            return;
+        }
+        if self.mode.teams() {
+            self.game.winner_team = match t1.cmp(&t2) {
+                std::cmp::Ordering::Greater => 1,
+                std::cmp::Ordering::Less => 2,
+                std::cmp::Ordering::Equal => 0,
+            };
+        } else {
+            self.game.winner_id = best.filter(|b| b.1 > 0).map_or(0, |b| b.0);
+        }
+        let mode = self.mode;
+        let wt = self.game.winner_team;
+        self.game.mvp = self
+            .slots
+            .iter()
+            .filter(|(_, s)| wt == 0 || s.state.team == wt)
+            .max_by(|a, b| a.1.score(mode).cmp(&b.1.score(mode)).then(b.0.cmp(a.0)))
+            .map_or(0, |(&id, _)| id);
+        self.game.phase = Phase::Ended;
+        self.game.next_in = rules::RESULTS_TIME;
+        self.roster_dirty = true;
+    }
+
+    fn new_match(&mut self) {
+        self.game = fresh_match(self.mode);
+        self.point_acc = 0.0;
+        self.bullets.clear();
+        let ids: Vec<u32> = self.slots.keys().copied().collect();
+        for id in ids {
+            let team = self.slots[&id].state.team;
+            let fresh = self.spawn(id, team);
+            let s = self.slots.get_mut(&id).unwrap();
+            s.state = fresh;
+            s.queue.clear();
+            (s.kills, s.deaths, s.slaps, s.kos, s.caps) = (0, 0, 0, 0, 0);
+            self.events.push(GameEvent::Respawn { id });
+        }
+        self.roster_dirty = true;
+    }
+
+    /// Standing on a point alone moves it toward your team; enemies there too stop it.
+    fn update_flags(&mut self, dt: f32) {
+        for (k, flag) in self.game.flags.iter_mut().enumerate() {
+            let mut on = [Vec::new(), Vec::new()];
+            for (&id, s) in &self.slots {
+                let p = &s.state;
+                if p.dead <= 0.0
+                    && p.team > 0
+                    && libm::hypotf(p.x - flag.x, p.z - flag.z) <= rules::FLAG_RADIUS
+                    && p.y < 2.5
+                {
+                    on[p.team as usize - 1].push(id);
+                }
+            }
+            let rate = |n: usize| dt / rules::CAPTURE_TIME * (1.0 + 0.5 * (n.min(3) as f32 - 1.0));
+            let before = flag.owner;
+            match (on[0].len(), on[1].len()) {
+                (n, 0) if n > 0 => flag.progress = (flag.progress - rate(n)).max(-1.0),
+                (0, n) if n > 0 => flag.progress = (flag.progress + rate(n)).min(1.0),
+                (0, 0) => {
+                    // drifts back to whoever holds it
+                    let home = match flag.owner {
+                        1 => -1.0,
+                        2 => 1.0,
+                        _ => 0.0,
+                    };
+                    let d = home - flag.progress;
+                    flag.progress += d.clamp(-dt / rules::CAPTURE_TIME, dt / rules::CAPTURE_TIME);
+                }
+                _ => {} // contested
+            }
+            if flag.progress <= -1.0 {
+                flag.owner = 1;
+            } else if flag.progress >= 1.0 {
+                flag.owner = 2;
+            } else if (flag.owner == 1 && flag.progress > 0.0)
+                || (flag.owner == 2 && flag.progress < 0.0)
+            {
+                flag.owner = 0;
+            }
+            if flag.owner != before && flag.owner != 0 {
+                self.events.push(GameEvent::Capture {
+                    flag: k as u8,
+                    team: flag.owner,
+                });
+                for id in &on[flag.owner as usize - 1] {
+                    if let Some(s) = self.slots.get_mut(id) {
+                        s.caps += 1;
+                    }
+                }
+                self.roster_dirty = true;
+            }
+        }
+        self.point_acc += dt;
+        while self.point_acc >= rules::POINTS_EVERY {
+            self.point_acc -= rules::POINTS_EVERY;
+            for f in &self.game.flags {
+                if f.owner > 0 {
+                    self.game.scores[f.owner as usize - 1] += 1;
+                }
+            }
+        }
     }
 
     fn broadcast(&self, m: &ServerMessage) {
@@ -729,5 +1028,185 @@ mod tests {
         let mut g = two_players(Mode::Slap);
         slap_once(&mut g, 1);
         assert!(g.bullets.is_empty() && !g.slots[&1].state.armed);
+    }
+
+    // ---- modes, match flow, bots ----
+
+    fn join(g: &mut Game, id: u32) {
+        let (out, rx) = unbounded_channel();
+        std::mem::forget(rx);
+        g.handle(RoomEvent::Join {
+            id,
+            name: format!("p{id}"),
+            out,
+        });
+    }
+
+    fn bots(g: &Game) -> usize {
+        g.slots.values().filter(|s| s.brain.is_some()).count()
+    }
+
+    #[test]
+    fn bots_keep_a_lone_player_company_and_leave_for_people() {
+        let mut g = Game::new("B".into(), Mode::Combat);
+        join(&mut g, 1);
+        assert_eq!(bots(&g), 2);
+        join(&mut g, 2);
+        assert_eq!(bots(&g), 0);
+        g.handle(RoomEvent::Leave { id: 2 });
+        assert_eq!(bots(&g), 2);
+        g.handle(RoomEvent::Leave { id: 1 });
+        assert!(g.is_empty() && g.slots.is_empty());
+    }
+
+    #[test]
+    fn teams_are_balanced_and_spawn_on_their_own_half() {
+        let mut g = Game::new("T".into(), Mode::Tdm);
+        join(&mut g, 1);
+        let teams: Vec<u8> = g.slots.values().map(|s| s.state.team).collect();
+        assert_eq!(teams.iter().filter(|&&t| t == 1).count(), 2);
+        assert_eq!(teams.iter().filter(|&&t| t == 2).count(), 1);
+        for s in g.slots.values() {
+            let side = if s.state.x - s.state.z < 0.0 { 1 } else { 2 };
+            assert_eq!(side, s.state.team, "{} spawned on the wrong half", s.name);
+        }
+    }
+
+    #[test]
+    fn no_friendly_fire_in_team_modes() {
+        let mut g = duel();
+        g.mode = Mode::Tdm;
+        for id in [1, 2] {
+            g.slots.get_mut(&id).unwrap().state.team = 1;
+        }
+        for seq in 1..30 {
+            tick(&mut g, seq, true, 1.15, weapons::RIFLE, 0.0);
+        }
+        assert_eq!(g.slots[&2].state.hp, combat::MAX_HP);
+        g.slots.get_mut(&2).unwrap().state.team = 2;
+        for seq in 30..60 {
+            tick(&mut g, seq, true, 1.15, weapons::RIFLE, 0.0);
+        }
+        assert!(g.slots[&2].state.hp < combat::MAX_HP || g.slots[&2].state.dead > 0.0);
+        assert!(g.game.scores[0] <= 1);
+    }
+
+    #[test]
+    fn domination_capture_and_points() {
+        let mut g = duel();
+        g.mode = Mode::Domination;
+        g.game = fresh_match(Mode::Domination);
+        let (fx, fz) = map::FLAGS[0];
+        {
+            let st = &mut g.slots.get_mut(&1).unwrap().state;
+            (st.team, st.x, st.z) = (1, fx, fz);
+            let st = &mut g.slots.get_mut(&2).unwrap().state;
+            (st.team, st.x, st.z) = (2, map::FLAGS[2].0, map::FLAGS[2].1 + 6.0);
+        }
+        let idle = |g: &mut Game, seq: u32| {
+            for id in [1, 2] {
+                g.handle(RoomEvent::Input {
+                    id,
+                    frames: vec![InputFrame {
+                        seq,
+                        ..Default::default()
+                    }],
+                });
+            }
+            g.step();
+        };
+        let secs = |t: f32| (t / TICK_DT) as u32;
+        for seq in 1..secs(rules::CAPTURE_TIME - 0.5) {
+            idle(&mut g, seq);
+        }
+        assert_eq!(g.game.flags[0].owner, 0, "not yet");
+        for seq in 1000..1000 + secs(1.0) {
+            idle(&mut g, seq);
+        }
+        assert_eq!(g.game.flags[0].owner, 1);
+        assert_eq!(g.slots[&1].caps, 1);
+        for seq in 2000..2000 + secs(10.0) {
+            idle(&mut g, seq);
+        }
+        assert!((9..=11).contains(&g.game.scores[0]), "{:?}", g.game.scores);
+        assert_eq!(g.game.scores[1], 0);
+        // an enemy on the point alongside blocks it from moving
+        let p = g.game.flags[0].progress;
+        {
+            let st = &mut g.slots.get_mut(&2).unwrap().state;
+            (st.x, st.z) = (fx + 1.0, fz);
+        }
+        for seq in 3000..3000 + secs(2.0) {
+            idle(&mut g, seq);
+        }
+        assert_eq!(g.game.flags[0].progress, p, "contested");
+    }
+
+    #[test]
+    fn match_ends_at_the_limit_then_restarts() {
+        let mut g = duel();
+        g.slots.get_mut(&1).unwrap().kills = rules::FFA_KILLS - 1;
+        let mut seq = 0;
+        while g.game.phase == Phase::Playing && seq < 120 {
+            seq += 1;
+            tick(&mut g, seq, true, 1.15, weapons::RIFLE, 0.0);
+        }
+        assert_eq!(g.game.phase, Phase::Ended);
+        assert_eq!((g.game.winner_id, g.game.mvp), (1, 1));
+        let hp = g.slots[&2].state.hp;
+        for _ in 0..(rules::RESULTS_TIME / TICK_DT) as u32 + 2 {
+            seq += 1;
+            tick(&mut g, seq, true, 1.15, weapons::RIFLE, 0.0);
+            if g.game.phase == Phase::Ended {
+                assert!(
+                    g.slots[&2].state.hp >= hp,
+                    "no damage on the results screen"
+                );
+            }
+        }
+        assert_eq!(g.game.phase, Phase::Playing);
+        assert_eq!(g.slots[&1].kills, 0);
+        assert!(g.game.time_left > rules::MATCH_TIME - 1.0);
+    }
+
+    #[test]
+    fn bots_hunt_and_fight() {
+        for mode in [Mode::Combat, Mode::Domination, Mode::Slap] {
+            let mut g = Game::new("S".into(), mode);
+            join(&mut g, 1); // a person who stands still at their spawn
+            let ids: Vec<u32> = g.slots.keys().copied().filter(|&k| k != 1).collect();
+            let start: Vec<(f32, f32)> = ids
+                .iter()
+                .map(|k| (g.slots[k].state.x, g.slots[k].state.z))
+                .collect();
+            let mut moved = vec![0.0f32; ids.len()];
+            for t in 0..(90.0 / TICK_DT) as u32 {
+                g.step();
+                if t % 60 == 0 {
+                    for (i, k) in ids.iter().enumerate() {
+                        let s = &g.slots[k].state;
+                        moved[i] = moved[i].max(libm::hypotf(s.x - start[i].0, s.z - start[i].1));
+                    }
+                }
+            }
+            let kills: u32 = g
+                .slots
+                .values()
+                .map(|s| if mode == Mode::Slap { s.kos } else { s.kills })
+                .sum();
+            assert!(
+                moved.iter().all(|&m| m > 10.0),
+                "{mode:?}: bots barely moved {moved:?}"
+            );
+            if mode == Mode::Domination {
+                assert!(
+                    g.game.scores.iter().sum::<u32>() > 20,
+                    "{mode:?}: no points {:?}",
+                    g.game.scores
+                );
+            } else {
+                assert!(kills >= 2, "{mode:?}: only {kills} kills in 90 s");
+            }
+        }
     }
 }

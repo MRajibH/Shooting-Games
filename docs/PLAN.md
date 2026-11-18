@@ -72,8 +72,8 @@ Key netcode rules:
 1. **Skeleton** (done) — Rust workspace, Vite client, WASM prediction, rooms, reconciliation and interpolation, realistic movement constants and lighting baseline.
 2. **Movement + map + character + Slap mode** (done) — collision in Rust, the map with PBR materials, stairs, vaulting, lean, stamina, camera collision, rigged animated soldier with procedural layers, Slap Arena.
 3. **Combat** (done) — four weapons, projectile ballistics with drag and drop, recoil/sway/ADS, hitboxes and headshots, lag compensation, death and respawn. Deferred: armour plates and penetration of thin materials (to milestone 7).
-4. **Modes + rooms** — team deathmatch and domination, round flow, quick play and room codes, scoreboard and results.
-5. **Bots** — waypoint graph, combat behaviour, three difficulties, auto-fill.
+4. **Modes + rooms** (done) — team deathmatch and domination, round flow, quick play and room codes, scoreboard and results. Pulled forward from milestone 5: bots that keep a lone player company (ground navigation, line-of-sight targeting, human reaction and aim error).
+5. **Bots** — difficulty levels, upper-level navigation (stairs and walkway), using cover, grenades-free tactics, filling bigger rooms.
 6. **Mobile** — touch sticks, aim assist, responsive HUD, quality scaling.
 7. **Polish** — rigged characters with animation blending and IK, post-processing, decals, positional audio, kill feed, hit markers, settings, tuning.
 

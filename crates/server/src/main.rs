@@ -1,4 +1,6 @@
+mod bots;
 mod game;
+mod nav;
 mod rooms;
 
 use std::path::PathBuf;

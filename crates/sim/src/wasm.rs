@@ -92,6 +92,10 @@ impl Predictor {
         sim::spread(&self.s)
     }
     #[wasm_bindgen(getter)]
+    pub fn team(&self) -> u8 {
+        self.s.team
+    }
+    #[wasm_bindgen(getter)]
     pub fn armed(&self) -> bool {
         self.s.armed
     }

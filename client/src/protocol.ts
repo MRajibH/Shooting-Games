@@ -40,6 +40,8 @@ export interface PlayerState {
   ko: number;
   slapCd: number;
   daze: number;
+  /** 0 free-for-all, else 1 or 2. */
+  team: number;
   armed: boolean;
   hp: number;
   dead: number;
@@ -71,7 +73,21 @@ export interface WeaponSpec {
   reloadEmpty: number; reloadPerShell: boolean; chamber: boolean; adsTime: number; adsFov: number; sway: number;
 }
 
-export type Mode = 'combat' | 'slap';
+export type Mode = 'combat' | 'tdm' | 'domination' | 'slap';
+
+export interface FlagState { x: number; z: number; owner: number; progress: number }
+
+export interface MatchState {
+  phase: 'playing' | 'ended';
+  timeLeft: number;
+  limit: number;
+  scores: [number, number];
+  flags: FlagState[];
+  winnerTeam: number;
+  winnerId: number;
+  mvp: number;
+  nextIn: number;
+}
 
 export type GameEvent =
   | { t: 'slap'; from: number; to: number | null }
@@ -80,9 +96,13 @@ export type GameEvent =
   | { t: 'fire'; id: number; w: number; o: V3; d: V3 }
   | { t: 'impact'; p: V3; n: V3; mat: number }
   | { t: 'hit'; from: number; to: number; dmg: number; zone: Zone; p: V3 }
-  | { t: 'kill'; from: number; to: number; w: number; head: boolean; dist: number };
+  | { t: 'kill'; from: number; to: number; w: number; head: boolean; dist: number }
+  | { t: 'capture'; flag: number; team: number };
 
-export interface RosterEntry { id: number; name: string; slaps: number; kos: number; kills: number; deaths: number }
+export interface RosterEntry {
+  id: number; name: string; slaps: number; kos: number; kills: number; deaths: number;
+  caps: number; score: number; team: number; bot: boolean;
+}
 
 export type ClientMessage =
   | { t: 'join'; name: string; room?: string; mode?: Mode }
@@ -90,6 +110,6 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { t: 'welcome'; id: number; room: string; tickRate: number; mode: Mode }
-  | { t: 'snapshot'; tick: number; ack: number; players: PlayerState[]; events: GameEvent[] }
+  | { t: 'snapshot'; tick: number; ack: number; players: PlayerState[]; events: GameEvent[]; game: MatchState }
   | { t: 'roster'; players: RosterEntry[] }
   | { t: 'left'; id: number };
