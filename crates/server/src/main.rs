@@ -72,7 +72,15 @@ async fn session(socket: WebSocket, reg: Registry) {
             continue;
         };
         match (msg, &seat) {
-            (ClientMessage::Join { name, room, mode }, None) => {
+            (
+                ClientMessage::Join {
+                    name,
+                    room,
+                    mode,
+                    difficulty,
+                },
+                None,
+            ) => {
                 let name: String = name
                     .chars()
                     .filter(|c| c.is_alphanumeric() || " _-".contains(*c))
@@ -83,7 +91,11 @@ async fn session(socket: WebSocket, reg: Registry) {
                 } else {
                     name
                 };
-                let s = reg.take_seat(room.as_deref(), mode.unwrap_or_default());
+                let s = reg.take_seat(
+                    room.as_deref(),
+                    mode.unwrap_or_default(),
+                    difficulty.unwrap_or_default(),
+                );
                 let _ = s.tx.send(RoomEvent::Join {
                     id,
                     name,

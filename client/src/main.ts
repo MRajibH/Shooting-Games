@@ -6,7 +6,7 @@ import { Fx } from './fx';
 import { spec, weapons } from './guns';
 import { Input } from './input';
 import { Flag, Net } from './net';
-import type { GameEvent, MatchState, Mode, RosterEntry, V3 } from './protocol';
+import type { Difficulty, GameEvent, MatchState, Mode, RosterEntry, V3 } from './protocol';
 import { buildWorld, parseBoxes, raycastBoxes } from './world';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -50,6 +50,12 @@ const startMode = params.get('mode');
 if (startMode === 'combat' || startMode === 'tdm' || startMode === 'domination' || startMode === 'slap') {
   ($<HTMLInputElement>('join').querySelector(`input[value=${startMode}]`) as HTMLInputElement).checked = true;
 }
+let savedSkill: string | null = null;
+try { savedSkill = localStorage.getItem('riftline.ai'); } catch { /* storage blocked */ }
+const startSkill = params.get('ai') ?? savedSkill;
+if (startSkill === 'easy' || startSkill === 'normal' || startSkill === 'hard') {
+  ($<HTMLInputElement>('join').querySelector(`input[name=ai][value=${startSkill}]`) as HTMLInputElement).checked = true;
+}
 
 let net: Net | null = null;
 let selfChar: Character | null = null;
@@ -68,12 +74,15 @@ $('join').addEventListener('submit', async (e) => {
   sfx.unlock();
   const name = nameEl.value.trim();
   try { localStorage.setItem('riftline.name', name); } catch { /* storage blocked */ }
-  const mode = (new FormData(e.target as HTMLFormElement).get('mode') ?? 'combat') as Mode;
+  const form = new FormData(e.target as HTMLFormElement);
+  const mode = (form.get('mode') ?? 'combat') as Mode;
+  const ai = (form.get('ai') ?? 'normal') as Difficulty;
+  try { localStorage.setItem('riftline.ai', ai); } catch { /* storage blocked */ }
   await charLoad;
   $('menu').classList.add('hidden');
   $('hud').classList.remove('hidden');
   renderer.domElement.requestPointerLock()?.catch?.(() => {});
-  start(name, roomEl.value.trim() || undefined, mode);
+  start(name, roomEl.value.trim() || undefined, mode, ai);
 });
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -90,8 +99,8 @@ let deathNote = '';
 const hurtFrom: { pos: THREE.Vector3; age: number; el: HTMLElement }[] = [];
 let shake = 0;
 
-function start(name: string, room: string | undefined, mode: Mode) {
-  net = new Net(name, room, mode);
+function start(name: string, room: string | undefined, mode: Mode, ai: Difficulty) {
+  net = new Net(name, room, mode, ai);
   net.onStatus = (s) => ($('status').textContent = s);
   net.onWelcome = () => {
     const combat = net!.mode !== 'slap';

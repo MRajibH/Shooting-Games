@@ -8,11 +8,11 @@ use riftline_sim::constants::{
 };
 use riftline_sim::map;
 use riftline_sim::protocol::{
-    FlagState, GameEvent, InputFrame, MatchState, Mode, Phase, PlayerState, RosterEntry,
-    ServerMessage,
+    Difficulty, FlagState, GameEvent, InputFrame, MatchState, Mode, Phase, PlayerState,
+    RosterEntry, ServerMessage,
 };
 
-use crate::bots::{self, Brain, View};
+use crate::bots::{self, Brain, Noise, View};
 use riftline_sim::sim::{spawn_state, step_player};
 
 /// Input frames buffered beyond this are run two per tick until the backlog clears.
@@ -100,10 +100,13 @@ pub struct Game {
     game: MatchState,
     point_acc: f32,
     next_bot: u32,
+    difficulty: Difficulty,
+    /// Recent gunshots (with the tick they happened), for bots to hear.
+    noises: Vec<(u64, Noise)>,
 }
 
 impl Game {
-    pub fn new(room: String, mode: Mode) -> Self {
+    pub fn new(room: String, mode: Mode, difficulty: Difficulty) -> Self {
         Self {
             room,
             mode,
@@ -118,6 +121,8 @@ impl Game {
             game: fresh_match(mode),
             point_acc: 0.0,
             next_bot: FIRST_BOT_ID,
+            difficulty,
+            noises: Vec::new(),
         }
     }
 
@@ -197,7 +202,12 @@ impl Game {
                 .map_or_else(|| format!("Bot-{id}"), |n| n.to_string());
             // nobody listens to a bot's outbox
             let (out, _) = tokio::sync::mpsc::unbounded_channel();
-            self.add_player(id, name, out, Some(Box::new(Brain::new(id))));
+            self.add_player(
+                id,
+                name,
+                out,
+                Some(Box::new(Brain::new(id, self.difficulty))),
+            );
             bots.push(id);
         }
     }
@@ -250,6 +260,7 @@ impl Game {
                         room: self.room.clone(),
                         tick_rate: TICK_RATE,
                         mode: self.mode,
+                        difficulty: self.difficulty,
                     },
                 );
                 self.add_player(id, name, out, None);
@@ -285,10 +296,14 @@ impl Game {
 
         // bots decide this tick's input from what they can see
         let states: Vec<PlayerState> = self.slots.values().map(|s| s.state.clone()).collect();
+        let tick = self.tick;
+        self.noises.retain(|(t, _)| tick - *t < 20);
+        let noises: Vec<Noise> = self.noises.iter().map(|(_, n)| *n).collect();
         let view = View {
             players: &states,
             mode: self.mode,
             flags: &self.game.flags,
+            noises: &noises,
             dt: TICK_DT,
         };
         for s in self.slots.values_mut() {
@@ -354,6 +369,13 @@ impl Game {
         }
         for (id, w, shots, rewind) in volleys {
             let first = shots[0];
+            self.noises.push((
+                self.tick,
+                Noise {
+                    at: first.origin,
+                    by: id,
+                },
+            ));
             self.events.push(GameEvent::Fire {
                 id,
                 w,
@@ -758,7 +780,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     fn two_players(mode: Mode) -> Game {
-        let mut g = Game::new("T".into(), mode);
+        let mut g = Game::new("T".into(), mode, Difficulty::Normal);
         for id in [1, 2] {
             let (out, _rx) = unbounded_channel();
             std::mem::forget(_rx);
@@ -870,7 +892,7 @@ mod tests {
     /// Shooter 1 at z = 10 facing -z; target 2 at z = 0 in line with the shooter's
     /// right shoulder (where shots leave from).
     fn duel() -> Game {
-        let mut g = Game::new("C".into(), Mode::Combat);
+        let mut g = Game::new("C".into(), Mode::Combat, Difficulty::Normal);
         for id in [1, 2] {
             let (out, rx) = unbounded_channel();
             std::mem::forget(rx);
@@ -1048,7 +1070,7 @@ mod tests {
 
     #[test]
     fn bots_keep_a_lone_player_company_and_leave_for_people() {
-        let mut g = Game::new("B".into(), Mode::Combat);
+        let mut g = Game::new("B".into(), Mode::Combat, Difficulty::Normal);
         join(&mut g, 1);
         assert_eq!(bots(&g), 2);
         join(&mut g, 2);
@@ -1061,7 +1083,7 @@ mod tests {
 
     #[test]
     fn teams_are_balanced_and_spawn_on_their_own_half() {
-        let mut g = Game::new("T".into(), Mode::Tdm);
+        let mut g = Game::new("T".into(), Mode::Tdm, Difficulty::Normal);
         join(&mut g, 1);
         let teams: Vec<u8> = g.slots.values().map(|s| s.state.team).collect();
         assert_eq!(teams.iter().filter(|&&t| t == 1).count(), 2);
@@ -1172,7 +1194,7 @@ mod tests {
     #[test]
     fn bots_hunt_and_fight() {
         for mode in [Mode::Combat, Mode::Domination, Mode::Slap] {
-            let mut g = Game::new("S".into(), mode);
+            let mut g = Game::new("S".into(), mode, Difficulty::Normal);
             join(&mut g, 1); // a person who stands still at their spawn
             let ids: Vec<u32> = g.slots.keys().copied().filter(|&k| k != 1).collect();
             let start: Vec<(f32, f32)> = ids
@@ -1194,6 +1216,14 @@ mod tests {
                 .values()
                 .map(|s| if mode == Mode::Slap { s.kos } else { s.kills })
                 .sum();
+            if mode.armed() {
+                let covers: u32 = g
+                    .slots
+                    .values()
+                    .filter_map(|s| s.brain.as_ref().map(|b| b.covers))
+                    .sum();
+                assert!(covers > 0, "{mode:?}: bots never used cover");
+            }
             assert!(
                 moved.iter().all(|&m| m > 10.0),
                 "{mode:?}: bots barely moved {moved:?}"
@@ -1208,5 +1238,45 @@ mod tests {
                 assert!(kills >= 2, "{mode:?}: only {kills} kills in 90 s");
             }
         }
+    }
+
+    /// Seconds a lone bot needs to kill a person standing still 20 m away in the open.
+    fn time_to_kill(d: Difficulty, seed: u32) -> f32 {
+        let mut g = Game::new("K".into(), Mode::Combat, d);
+        g.next_bot = FIRST_BOT_ID + seed * 7;
+        join(&mut g, 1);
+        let mut bots: Vec<u32> = g.slots.keys().copied().filter(|&k| k != 1).collect();
+        bots.sort_unstable();
+        g.slots.remove(&bots[1]);
+        let b = bots[0];
+        {
+            let st = &mut g.slots.get_mut(&1).unwrap().state;
+            (st.x, st.z) = (LANE, -10.0);
+            let st = &mut g.slots.get_mut(&b).unwrap().state;
+            (st.x, st.z, st.yaw) = (LANE, 10.0, 0.0);
+        }
+        for t in 0..(30.0 / TICK_DT) as u32 {
+            g.step();
+            if g.slots[&1].state.dead > 0.0 {
+                return t as f32 * TICK_DT;
+            }
+        }
+        30.0
+    }
+
+    #[test]
+    fn difficulty_changes_how_fast_bots_kill() {
+        let avg = |d| (0..4).map(|k| time_to_kill(d, k)).sum::<f32>() / 4.0;
+        let (easy, normal, hard) = (
+            avg(Difficulty::Easy),
+            avg(Difficulty::Normal),
+            avg(Difficulty::Hard),
+        );
+        eprintln!("time to kill at 20 m: easy {easy:.2}s normal {normal:.2}s hard {hard:.2}s");
+        assert!(
+            hard < normal && normal < easy,
+            "easy {easy} normal {normal} hard {hard}"
+        );
+        assert!(hard < 3.0 && easy < 30.0);
     }
 }

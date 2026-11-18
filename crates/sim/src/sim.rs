@@ -762,11 +762,12 @@ mod tests {
             room: "R1".into(),
             tick_rate: 60,
             mode: Mode::Slap,
+            difficulty: crate::protocol::Difficulty::Hard,
         })
         .unwrap();
         assert_eq!(
             w,
-            r#"{"t":"welcome","id":1,"room":"R1","tickRate":60,"mode":"slap"}"#
+            r#"{"t":"welcome","id":1,"room":"R1","tickRate":60,"mode":"slap","difficulty":"hard"}"#
         );
     }
 

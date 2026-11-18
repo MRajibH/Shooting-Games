@@ -6,7 +6,23 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
 
 ## Status
 
-**Milestone 4 done: modes, match flow and AI players.** (3: combat. 2: movement, map, character, Slap mode.)
+**Milestone 5 done: smarter AI players.** (4: modes, match flow, first bots. 3: combat. 2: movement, map, character, Slap mode.)
+
+- **Difficulty** (menu, or `?ai=easy|normal|hard`): reaction time, aim error and how fast it
+  settles, turn speed, burst length, hearing range and whether bots use cover. Measured against a
+  person standing still 20 m away, the average time to kill is about 8.5 s (Easy), 1.7 s
+  (Normal) and 1.1 s (Hard).
+- **Cover:** when hurt or low on ammo (Normal and Hard), a bot picks a nearby spot the enemy cannot
+  see (crouching behind low walls if that is all there is), reloads and recovers there, fights back
+  if found, then peeks out again.
+- **Hearing and memory:** bots no longer know where everyone is. They react to gunfire within
+  earshot, go to where they last saw or heard someone, and otherwise wander the map; only after a
+  long quiet spell do they get a rough steer toward the nearest enemy, so a lone player is never
+  left waiting.
+- **Upper level:** the navigation includes the steel walkway and both staircases, so bots climb up
+  and come back down.
+- **Hard bots** crouch to steady long shots.
+
 
 - **Four modes:** Deathmatch (first to 25 kills), Team Deathmatch (Blue vs Red, first team to 50),
   Domination (hold capture points A, B, C; one point per second per point held, first to 200),

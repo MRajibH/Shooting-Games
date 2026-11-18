@@ -1,9 +1,10 @@
 import { Predictor, interpDelayMs } from './wasm/riftline_sim.js';
-import type { ClientMessage, GameEvent, InputFrame, MatchState, Mode, PlayerState, RosterEntry, ServerMessage } from './protocol';
+import type { ClientMessage, Difficulty, GameEvent, InputFrame, MatchState, Mode, PlayerState, RosterEntry, ServerMessage } from './protocol';
 
 interface Snap { time: number; tick: number; players: Map<number, PlayerState>; }
 
 export const Flag = { Slap: 1, Shot: 2, Dry: 4 } as const;
+const MODE_NAME: Record<Mode, string> = { combat: 'Deathmatch', tdm: 'Team Deathmatch', domination: 'Domination', slap: 'Slap Arena' };
 
 const send = (ws: WebSocket, m: ClientMessage) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
 const lerpAngle = (a: number, b: number, k: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
@@ -34,10 +35,10 @@ export class Net {
   private snaps: Snap[] = [];
   private readonly delay = interpDelayMs();
 
-  constructor(name: string, room: string | undefined, mode: Mode) {
+  constructor(name: string, room: string | undefined, mode: Mode, difficulty: Difficulty) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     this.ws = new WebSocket(`${proto}://${location.host}/ws`);
-    this.ws.onopen = () => send(this.ws, { t: 'join', name, room, mode });
+    this.ws.onopen = () => send(this.ws, { t: 'join', name, room, mode, difficulty });
     this.ws.onmessage = (e) => this.handle(JSON.parse(e.data) as ServerMessage);
     this.ws.onclose = () => this.onStatus('disconnected — reload to rejoin');
   }
@@ -67,7 +68,7 @@ export class Net {
       this.mode = m.mode;
       this.me.free();
       this.me = new Predictor(m.id, m.mode === 'combat');
-      this.onStatus(`${m.mode === 'slap' ? 'Slap Arena' : 'Combat'} · room ${m.room}`);
+      this.onStatus(`${MODE_NAME[m.mode]} · room ${m.room} · AI ${m.difficulty}`);
       this.onWelcome();
     } else if (m.t === 'snapshot') {
       this.game = m.game;

@@ -118,6 +118,16 @@ impl Mode {
     }
 }
 
+/// How good the AI players in a room are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Normal,
+    Hard,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
@@ -233,6 +243,8 @@ pub enum ClientMessage {
         room: Option<String>,
         #[serde(default)]
         mode: Option<Mode>,
+        #[serde(default)]
+        difficulty: Option<Difficulty>,
     },
     Input {
         frames: Vec<InputFrame>,
@@ -248,6 +260,7 @@ pub enum ServerMessage {
         room: String,
         tick_rate: u32,
         mode: Mode,
+        difficulty: Difficulty,
     },
     Snapshot {
         tick: u64,

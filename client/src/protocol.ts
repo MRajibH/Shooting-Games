@@ -74,6 +74,7 @@ export interface WeaponSpec {
 }
 
 export type Mode = 'combat' | 'tdm' | 'domination' | 'slap';
+export type Difficulty = 'easy' | 'normal' | 'hard';
 
 export interface FlagState { x: number; z: number; owner: number; progress: number }
 
@@ -105,11 +106,11 @@ export interface RosterEntry {
 }
 
 export type ClientMessage =
-  | { t: 'join'; name: string; room?: string; mode?: Mode }
+  | { t: 'join'; name: string; room?: string; mode?: Mode; difficulty?: Difficulty }
   | { t: 'input'; frames: InputFrame[] };
 
 export type ServerMessage =
-  | { t: 'welcome'; id: number; room: string; tickRate: number; mode: Mode }
+  | { t: 'welcome'; id: number; room: string; tickRate: number; mode: Mode; difficulty: Difficulty }
   | { t: 'snapshot'; tick: number; ack: number; players: PlayerState[]; events: GameEvent[]; game: MatchState }
   | { t: 'roster'; players: RosterEntry[] }
   | { t: 'left'; id: number };
