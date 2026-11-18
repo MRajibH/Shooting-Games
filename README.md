@@ -6,7 +6,22 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
 
 ## Status
 
-**Milestone 5 done: smarter AI players.** (4: modes, match flow, first bots. 3: combat. 2: movement, map, character, Slap mode.)
+**Milestone 6 done: phones and tablets.** (5: smarter AI players. 4: modes, match flow, first bots. 3: combat. 2: movement, map, character, Slap mode.)
+
+- **Touch controls** (switch on automatically when the main pointer is a finger; `?touch=1` or
+  `?touch=0` to force): a floating movement stick on the left half (push past the edge to
+  sprint), drag anywhere on the right to look, and buttons for fire (drag on it to keep aiming),
+  aim and crouch (toggles), jump, reload, weapon swap and lean. In Slap Arena the fire button
+  becomes SLAP and the gun buttons go away. A SCORE button shows the scoreboard.
+- **Aim assist (touch only):** when an enemy's chest is near the crosshair and in plain sight,
+  looking slows down over them and the aim drifts gently onto them. Mouse players get none.
+- **Phone layout:** compact HUD, full screen and landscape lock on deploy where the browser allows,
+  a "turn your device sideways" screen in portrait, safe-area aware buttons.
+- **Quality scaling:** Auto (default) starts at High on desktop and Medium on phones, scales the
+  render resolution every second to hold about 55 fps (down to 60 %), and drops a tier if that is
+  not enough. High / Medium / Low set the resolution cap and shadow resolution (4096 / 2048 / 1024).
+- **Settings** in the menu: graphics, look sensitivity, volume (remembered).
+
 
 - **Difficulty** (menu, or `?ai=easy|normal|hard`): reaction time, aim error and how fast it
   settles, turn speed, burst length, hearing range and whether bots use cover. Measured against a

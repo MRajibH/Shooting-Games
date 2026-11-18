@@ -53,7 +53,7 @@ export class Input {
     });
     addEventListener('mousemove', (e) => {
       if (document.pointerLockElement !== canvas) return;
-      const s = this.sensitivity * this.zoomScale;
+      const s = this.sensitivity * this.zoomScale * this.sensitivityScale;
       this.yaw -= e.movementX * s;
       this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - e.movementY * s));
     });
@@ -61,8 +61,22 @@ export class Input {
 
   /** Mouse sensitivity scale for the current zoom (set by the camera). */
   zoomScale = 1;
+  /** User setting, 0.25..3. */
+  sensitivityScale = 1;
+  /** Look slowdown while aim assist is on a target (1 = none). */
+  friction = 1;
 
-  get aiming() { return (this.mouse & 4) !== 0; }
+  /** On-screen controls (touch): movement axes and held buttons. */
+  touch = { mx: 0, mz: 0, buttons: 0 };
+
+  /** Turn the view by a drag of (dx, dy) pixels (touch look). */
+  look(dx: number, dy: number, scale = 0.0042) {
+    const s = scale * this.sensitivityScale * this.zoomScale * this.friction;
+    this.yaw -= dx * s;
+    this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - dy * s));
+  }
+
+  get aiming() { return (this.mouse & 4) !== 0 || (this.touch.buttons & Button.Aim) !== 0; }
   get holdingBreath() { return this.keys.has('ShiftLeft') && this.breathLock <= 0 && this.breath > 0; }
 
   /** Recoil from a shot: kicks the aim up (and sideways) over the next few ticks. */
@@ -119,10 +133,12 @@ export class Input {
     if (key('KeyB')) buttons |= Button.FireMode;
     if (this.mouse & 1) buttons |= Button.Fire;
     if (this.aiming) buttons |= Button.Aim;
+    buttons |= this.touch.buttons;
+    const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
     return {
       seq: ++this.seq,
-      moveX: key('KeyD') - key('KeyA'),
-      moveZ: key('KeyW') - key('KeyS'),
+      moveX: clamp1(key('KeyD') - key('KeyA') + this.touch.mx),
+      moveZ: clamp1(key('KeyW') - key('KeyS') + this.touch.mz),
       yaw: this.viewYaw,
       pitch: this.viewPitch,
       buttons,

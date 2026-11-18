@@ -6,6 +6,8 @@ import { Fx } from './fx';
 import { spec, weapons } from './guns';
 import { Input } from './input';
 import { Flag, Net } from './net';
+import { Quality, loadSettings, saveSettings, type QualityLevel } from './quality';
+import { TouchControls, isTouchDevice } from './touch';
 import type { Difficulty, GameEvent, MatchState, Mode, RosterEntry, V3 } from './protocol';
 import { buildWorld, parseBoxes, raycastBoxes } from './world';
 
@@ -37,6 +39,43 @@ const charLoad = loadCharacter(`${import.meta.env.BASE_URL}models/soldier.glb`);
 const sfx = new Sfx();
 const fx = new Fx(scene, camera);
 const input = new Input(renderer.domElement);
+const mobile = isTouchDevice();
+document.body.classList.toggle('touch', mobile);
+const settings = loadSettings();
+const quality = new Quality(renderer, world.sun, settings.quality, mobile);
+input.sensitivityScale = settings.sensitivity;
+sfx.volume = settings.volume;
+const touch = mobile ? new TouchControls(input) : null;
+if (touch) {
+  touch.visible = false;
+  touch.onScore = () => document.body.classList.toggle('show-board');
+}
+
+// settings panel in the menu
+const qualityEl = $<HTMLSelectElement>('quality');
+const sensEl = $<HTMLInputElement>('sens');
+const volEl = $<HTMLInputElement>('vol');
+qualityEl.value = settings.quality;
+sensEl.value = String(settings.sensitivity);
+volEl.value = String(settings.volume);
+const showSens = () => ($('sens-v').textContent = `${Number(sensEl.value).toFixed(2)}×`);
+showSens();
+qualityEl.addEventListener('change', () => {
+  settings.quality = qualityEl.value as QualityLevel;
+  quality.set(settings.quality, mobile);
+  saveSettings(settings);
+});
+sensEl.addEventListener('input', () => {
+  settings.sensitivity = Number(sensEl.value);
+  input.sensitivityScale = settings.sensitivity;
+  showSens();
+  saveSettings(settings);
+});
+volEl.addEventListener('input', () => {
+  settings.volume = Number(volEl.value);
+  sfx.volume = settings.volume;
+  saveSettings(settings);
+});
 const SHOULDER = shoulderOffset();
 const LEAN_SHIFT = leanShift();
 
@@ -81,7 +120,14 @@ $('join').addEventListener('submit', async (e) => {
   await charLoad;
   $('menu').classList.add('hidden');
   $('hud').classList.remove('hidden');
-  renderer.domElement.requestPointerLock()?.catch?.(() => {});
+  document.body.classList.add('playing');
+  if (mobile) {
+    // phones: go full screen and landscape where the browser allows it
+    await document.documentElement.requestFullscreen?.().catch(() => {});
+    await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape').catch(() => {});
+    touch!.visible = true;
+    touch!.setArmed(mode !== 'slap');
+  } else renderer.domElement.requestPointerLock()?.catch?.(() => {});
   start(name, roomEl.value.trim() || undefined, mode, ai);
 });
 
@@ -292,7 +338,7 @@ function spatialId(id: number | null): [number, number] {
 let fpsFrames = 0;
 let fps = 0;
 setInterval(() => { fps = fpsFrames; fpsFrames = 0; }, 1000);
-Object.assign(window, { __riftline: { get fps() { return fps; }, renderer, scene, camera, input, get net() { return net; }, others, get self() { return selfChar; } } });
+Object.assign(window, { __riftline: { get fps() { return fps; }, renderer, scene, camera, input, quality, touch, get net() { return net; }, others, get self() { return selfChar; } } });
 
 const DT = tickDt();
 const camPos = new THREE.Vector3();
@@ -367,6 +413,7 @@ function frame(now: number) {
   last = now;
 
   if (net?.ready) {
+    if (touch) aimAssist(dt);
     while (acc >= DT) { tick(); acc -= DT; }
   } else acc = 0;
 
@@ -488,6 +535,7 @@ function frame(now: number) {
   }
 
   fx.update(dt);
+  quality.frame();
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
@@ -612,3 +660,36 @@ function nameTags(myTeam: number) {
 }
 
 requestAnimationFrame(frame);
+
+/**
+ * Touch aim assist: when an enemy's chest is close to the crosshair and in plain
+ * sight, looking slows down over them and the aim drifts gently onto them.
+ * Mouse players get none.
+ */
+function aimAssist(dt: number) {
+  input.friction = 1;
+  if (!net || !net.me.armed || net.me.dead > 0) return;
+  const cone = net.me.ads > 0.5 ? 0.06 : 0.1;
+  const f = new THREE.Vector3(-Math.sin(input.yaw) * Math.cos(input.pitch), Math.sin(input.pitch), -Math.cos(input.yaw) * Math.cos(input.pitch));
+  const eye = camera.position;
+  let best: { dir: THREE.Vector3; angle: number } | null = null;
+  for (const p of net.remotes()) {
+    if (p.dead > 0 || (net.me.team && p.team === net.me.team)) continue;
+    const d = new THREE.Vector3(p.x, p.y + (p.crouched ? 0.8 : 1.2), p.z).sub(eye);
+    const dist = d.length();
+    if (dist > 70 || dist < 0.5) continue;
+    d.divideScalar(dist);
+    const angle = Math.acos(Math.min(1, d.dot(f)));
+    if (angle > cone || (best && angle > best.angle)) continue;
+    if (raycastBoxes(boxes, eye, d, dist, 0) < dist - 0.3) continue;
+    best = { dir: d, angle };
+  }
+  if (!best) return;
+  input.friction = 0.5;
+  const ty = Math.atan2(-best.dir.x, -best.dir.z);
+  const tp = Math.asin(best.dir.y);
+  const pull = 0.5 * dt * (1 - best.angle / cone);
+  const dy = Math.atan2(Math.sin(ty - input.yaw), Math.cos(ty - input.yaw));
+  input.yaw += Math.max(-pull, Math.min(pull, dy));
+  input.pitch += Math.max(-pull, Math.min(pull, tp - input.pitch));
+}

@@ -74,7 +74,7 @@ Key netcode rules:
 3. **Combat** (done) — four weapons, projectile ballistics with drag and drop, recoil/sway/ADS, hitboxes and headshots, lag compensation, death and respawn. Deferred: armour plates and penetration of thin materials (to milestone 7).
 4. **Modes + rooms** (done) — team deathmatch and domination, round flow, quick play and room codes, scoreboard and results. Pulled forward from milestone 5: bots that keep a lone player company (ground navigation, line-of-sight targeting, human reaction and aim error).
 5. **Bots** (done) — difficulty levels, upper-level navigation (stairs and walkway), cover, hearing gunfire, memory of last known positions. Rooms still get bots only when one person is alone (by request).
-6. **Mobile** — touch sticks, aim assist, responsive HUD, quality scaling.
+6. **Mobile** (done) — touch stick and buttons, touch-only aim assist, phone HUD with landscape prompt and full screen, automatic quality and resolution scaling, settings.
 7. **Polish** — rigged characters with animation blending and IK, post-processing, decals, positional audio, kill feed, hit markers, settings, tuning.
 
 ## Verification

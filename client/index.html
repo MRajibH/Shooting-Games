@@ -94,6 +94,54 @@
       .modes { grid-template-columns: 1fr 1fr; }
       .modes.skill { grid-template-columns: 1fr 1fr 1fr; }
       .modes.skill label { text-align: center; padding: 8px; }
+      #menu { overflow-y: auto; }
+      #menu form { margin: auto; }
+      #menu select { width: 100%; padding: 9px; border-radius: 6px; border: 1px solid #3a434b; background: #0f1316; color: var(--ink); font-size: 14px; }
+      #menu input[type=range] { padding: 0; accent-color: var(--accent); }
+      .settings { margin-top: 14px; color: var(--dim); }
+      .settings summary { cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+
+      /* touch controls */
+      #touch { position: fixed; inset: 0; z-index: 5; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+      #touch .zone { position: absolute; top: 0; bottom: 0; }
+      #touch .stick-zone { left: 0; width: 42%; }
+      #touch .look-zone { left: 42%; right: 0; }
+      .stick-base { position: absolute; left: 0; top: 0; width: 112px; height: 112px; margin: -56px 0 0 -56px; border-radius: 50%;
+        border: 2px solid rgba(255,255,255,.35); background: rgba(0,0,0,.15); pointer-events: none; }
+      .stick-knob { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; background: rgba(255,255,255,.5); }
+      .tb { position: absolute; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.4); background: rgba(10,14,18,.45);
+        color: #eef1f3; font: 700 11px system-ui, sans-serif; letter-spacing: .04em; touch-action: none; padding: 0; }
+      .tb.on { background: rgba(227,163,59,.6); color: #1a1408; }
+      .tb.fire { right: max(24px, env(safe-area-inset-right)); bottom: 108px; width: 92px; height: 92px; font-size: 14px; border-color: rgba(232,88,74,.8); }
+      .tb.aim { right: 134px; bottom: 150px; }
+      .tb.jump { right: max(26px, env(safe-area-inset-right)); bottom: 24px; }
+      .tb.crouch { right: 100px; bottom: 34px; font-size: 9px; }
+      .tb.reload { right: 146px; bottom: 82px; width: 46px; height: 46px; }
+      .tb.swap { right: max(30px, env(safe-area-inset-right)); bottom: 214px; width: 52px; height: 52px; font-size: 10px; }
+      .tb.lean-l { right: 202px; bottom: 206px; width: 40px; height: 40px; }
+      .tb.lean-r { right: 152px; bottom: 222px; width: 40px; height: 40px; }
+      .tb.score { right: 12px; top: 64px; width: auto; height: 28px; border-radius: 6px; padding: 0 10px; font-size: 10px; }
+      #touch.unarmed .aim, #touch.unarmed .reload, #touch.unarmed .swap, #touch.unarmed .lean-l, #touch.unarmed .lean-r { display: none; }
+
+      /* phone layout */
+      body.touch #help { display: none; }
+      body.touch #board { display: none; top: 100px; z-index: 6; }
+      body.touch.show-board #board { display: block; }
+      body.touch #ammo { bottom: auto; top: 100px; right: 12px; padding: 4px 8px; }
+      body.touch #mag { font-size: 22px; }
+      body.touch #slots { display: none; }
+      body.touch .bars { width: 22vw; bottom: 8px; }
+      body.touch #feed { top: 40px; font-size: 11px; }
+      body.touch #status { font-size: 10px; padding: 3px 6px; }
+      @media (max-height: 500px) {
+        #matchbar { top: 4px; padding: 3px 10px; gap: 6px; }
+        #matchbar .ts { font-size: 16px; }
+        #results h2 { font-size: 26px; }
+        #results .card { max-height: 86vh; overflow-y: auto; }
+      }
+      #rotate { display: none; position: fixed; inset: 0; z-index: 50; background: #0b0e11; color: var(--ink);
+        place-items: center; text-align: center; font-size: 18px; padding: 24px; }
+      @media (orientation: portrait) and (pointer: coarse) { body.playing #rotate { display: grid; } }
       @media (max-width: 600px) { #help, #board { display: none; } #mag { font-size: 26px; } }
       #hit { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; opacity: 0;
         transition: opacity .25s; background:
@@ -150,6 +198,15 @@
         </div>
         <label for="room">Private room code (optional)</label>
         <input id="room" maxlength="8" autocomplete="off" placeholder="Quick play" />
+        <details class="settings"><summary>Settings</summary>
+          <label for="quality">Graphics</label>
+          <select id="quality"><option value="auto">Auto (adapts to your device)</option><option value="high">High</option>
+            <option value="medium">Medium</option><option value="low">Low</option></select>
+          <label for="sens">Look sensitivity <span id="sens-v"></span></label>
+          <input id="sens" type="range" min="0.25" max="3" step="0.05" />
+          <label for="vol">Volume</label>
+          <input id="vol" type="range" min="0" max="1" step="0.05" />
+        </details>
         <button type="submit">DEPLOY</button>
         <div class="keys">Playing alone? Two AI soldiers join you until another person arrives.</div>
         <div class="keys">WASD move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse fire / slap · 1–4 weapons · R reload</div>
@@ -179,6 +236,7 @@
       <div id="ko" class="hidden"><div>KNOCKED OUT<small>Getting back up…</small></div></div>
       <div id="help">Click to capture mouse · Esc to release</div>
     </div>
+    <div id="rotate"><div>Turn your device sideways to play</div></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

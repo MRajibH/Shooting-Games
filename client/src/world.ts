@@ -98,6 +98,7 @@ export function buildWorld(renderer: THREE.WebGLRenderer, scene: THREE.Scene, bo
   }
 
   return {
+    sun,
     /** Keep the shadow frustum centred on the player. */
     follow(x: number, z: number) {
       sun.target.position.set(x, 0, z);
