@@ -45,6 +45,9 @@ async fn main() {
         .await
         .expect("bind port");
     println!("RIFTLINE server on http://localhost:{port}");
+    if let Some(ip) = lan_ip() {
+        println!("On your local network: http://{ip}:{port}  (phones and other computers on the same Wi-Fi)");
+    }
     axum::serve(listener, app).await.expect("server");
 }
 
@@ -116,4 +119,13 @@ async fn session(socket: WebSocket, reg: Registry) {
         let _ = s.tx.send(RoomEvent::Leave { id });
     }
     writer.abort();
+}
+
+/// This machine's address on the local network: the source address the OS would use
+/// for outside traffic. Connecting a UDP socket only picks a route; nothing is sent.
+fn lan_ip() -> Option<std::net::IpAddr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("192.0.2.1:9").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }

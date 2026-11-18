@@ -165,3 +165,21 @@ Open two tabs to see multiplayer. `?room=CODE&name=You` joins a private room.
 Controls: click to capture the mouse, WASD or arrow keys, Shift sprint, Space jump / vault, C / Ctrl crouch,
 Q / E lean, right mouse aim, left mouse fire (slap in Slap mode), 1–4 or wheel weapons, R reload,
 B fire mode, Shift while aimed holds breath. `?mode=combat|tdm|domination|slap` preselects the mode.
+
+## Play on your local network
+
+The server listens on every network interface, and on startup prints the address to use from
+other devices, for example `On your local network: http://192.168.1.20:8080`. Open that on a
+phone, tablet or another computer on the same Wi-Fi. `npm run dev` also accepts local network
+connections (Vite prints its own network address).
+
+If other devices cannot connect, the computer's firewall is probably blocking the port. On Ubuntu
+with ufw:
+
+```bash
+sudo ufw allow 8080/tcp
+```
+
+Phones load and play over plain `http`, but some browsers only allow full screen and landscape lock
+on `https` pages; without it, just turn the phone sideways.
+
