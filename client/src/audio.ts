@@ -230,4 +230,22 @@ export class Sfx {
     this.burst(o, t, 0.06, 'bandpass', 1800, 1.5, 0.9);
     this.tone(o, t, 900, 700, 0.12, 0.15, 'square');
   }
+
+  /** Wet smack on a face (layered on the slap). */
+  slapWet(pan = 0, gain = 1) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.out(pan, gain);
+    this.burst(o, t + 0.005, 0.07, 'bandpass', 700, 1.5, 0.7);
+    this.burst(o, t + 0.02, 0.12, 'lowpass', 1200, 0.7, 0.35);
+  }
+
+  /** A tooth landing: a tiny hard click. */
+  tooth(pan = 0, gain = 0.5) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.out(pan, gain);
+    this.tone(o, t, 3800 + Math.random() * 800, 3000, 0.04, 0.1, 'triangle');
+    this.burst(o, t, 0.015, 'highpass', 4000, 1, 0.4);
+  }
 }

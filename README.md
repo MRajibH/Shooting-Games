@@ -6,6 +6,13 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
 
 ## Status
 
+**Slap Arena, made real:** the slapping arm is steered with IK so the open palm sweeps across the
+victim's face (with a step and lean into the swing); reach is an arm's length (1.1 m centre to
+centre). The head snaps along the swing, blood sprays from the face and splats on the ground, about
+every other slap knocks a tooth out and a knockout blow takes two or three; teeth bounce, click and
+lie on the ground. Settings has a "Blood and gore" switch (on by default) that turns all of it, and
+bullet blood, off.
+
 **Milestone 7 done: polish.** (6: phones and tablets. 5: smarter AI players. 4: modes, match flow, first bots. 3: combat. 2: movement, map, character, Slap mode.)
 
 - **Arrow keys** move as well as WASD; right Shift / right Ctrl sprint and crouch for arrow-key players.

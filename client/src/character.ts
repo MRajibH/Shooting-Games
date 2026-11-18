@@ -113,6 +113,11 @@ export class Character {
   private stunW = 0;
   private hipYaw = 0;
   private slapT = -1;
+  /** Face being slapped, if any: the hand is steered onto it. */
+  private slapTarget: (() => THREE.Vector3 | null) | null = null;
+  /** Head snap from taking a slap: 1 at impact, decaying to 0. */
+  private jerk = 0;
+  private jerkSign = 1;
   private visY = 0;
   private time = Math.random() * 10;
   private hands!: { left: HandRig; right: HandRig };
@@ -227,7 +232,24 @@ export class Character {
     rotateWorld(h.thumb1, dirF, 0.4 * curl * h.palmSign);
   }
 
-  slap() { this.slapT = 0; }
+  /** Swing a slap; with a target, the open hand lands across their face. */
+  slap(target: (() => THREE.Vector3 | null) | null = null) { this.slapT = 0; this.slapTarget = target; }
+
+  /** Took a slap pushing along world direction `push`: the head snaps that way. */
+  slapped(push: THREE.Vector3) {
+    const yaw = this.root.rotation.y;
+    const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+    // which way round the neck the push turns the face
+    this.jerkSign = Math.sign(fwd.x * push.z - fwd.z * push.x) || 1;
+    this.jerk = 1;
+  }
+
+  /** Centre of the face in the world (valid after update). */
+  facePos() {
+    const head = this.bones.Head.getWorldPosition(new THREE.Vector3());
+    const yaw = this.root.rotation.y;
+    return head.add(new THREE.Vector3(-Math.sin(yaw) * 0.1, 0.07, -Math.cos(yaw) * 0.1));
+  }
 
   set visible(v: boolean) {
     this.model.visible = v;
@@ -329,7 +351,20 @@ export class Character {
         rotateWorld(B.RightArm, UP, swing * 1.7);
         rotateWorld(B.RightForeArm, UP, swing * 0.35);
         rotateWorld(B.RightHand, forward, -raise * 0.4);
+        const face = this.slapTarget?.() ?? null;
+        if (face) this.palmToFace(face, s, raise, forward, right);
       }
+    }
+
+    // slapped: the head whips round fast, then comes back slowly
+    if (this.jerk > 0) {
+      this.jerk = Math.max(0, this.jerk - dt * 2.6);
+      const k = this.jerk > 0.85 ? (1 - this.jerk) / 0.15 : this.jerk / 0.85;
+      const a = this.jerkSign * ease(k) * 0.95;
+      rotateWorld(B.Neck, UP, -a * 0.4);
+      rotateWorld(B.Head, UP, -a * 0.6);
+      rotateWorld(B.Head, forward, a * 0.3);
+      rotateWorld(B.Spine2, UP, -a * 0.15);
     }
 
     // staggered: wobble; knocked out: fall on the back
@@ -449,5 +484,34 @@ export class Character {
     twoBoneIK(B.LeftArm, B.LeftForeArm, B.LeftHand, lTarget,
       wp(B.LeftArm).addScaledVector(up, -1).addScaledVector(right, -0.6));
     this.grip(this.hands.left, (p.reload ?? 0) > 0 ? gUp.clone().negate().add(gFwd).normalize() : lFingers, gUp, 0.75);
+  }
+
+  /**
+   * Steer the slapping arm so the open palm sweeps across the target's face:
+   * lunge in, hand from beside their cheek straight through the face, and out.
+   */
+  private palmToFace(face: THREE.Vector3, s: number, raise: number, forward: THREE.Vector3, right: THREE.Vector3) {
+    const B = this.bones;
+    const up = new THREE.Vector3(0, 1, 0);
+    const shoulder = wp(B.RightArm);
+    const flat = face.clone().sub(this.root.position).setY(0).length();
+    if (flat > 1.35) return; // out of reach: just the swing
+    // step into the swing and lean the chest in, so the hand reaches the face
+    this.root.position.addScaledVector(forward, Math.min(0.75, Math.max(0, flat - 0.48)) * raise);
+    this.root.updateMatrixWorld(true);
+    rotateWorld(B.Spine1, right, -0.35 * raise);
+    const toFace = face.clone().sub(wp(B.RightArm)).normalize();
+    const strike = s < 0.3 ? 0 : s < 0.5 ? ease((s - 0.3) / 0.2) : 1;
+    const w = s < 0.18 ? 0 : s < 0.3 ? ease((s - 0.18) / 0.12) : s < 0.5 ? 1 : 1 - ease((s - 0.5) / 0.14);
+    if (w <= 0) return;
+    // palm centre: from 22 cm out on my right of their face, across to the other side
+    // aim a little into the face: the palm's skin sits a few cm in front of the bones
+    const contact = face.clone().addScaledVector(right, 0.2 * (1 - 2 * strike)).addScaledVector(toFace, 0.03);
+    const fingers = up.clone().multiplyScalar(0.75).addScaledVector(forward, 0.35).normalize();
+    const wrist = contact.addScaledVector(fingers, -0.06).addScaledVector(toFace, -0.02);
+    const hand = wp(B.RightHand);
+    twoBoneIK(B.RightArm, B.RightForeArm, B.RightHand, hand.lerp(wrist, w),
+      shoulder.addScaledVector(up, -1).addScaledVector(right, 0.9).addScaledVector(forward, -0.2));
+    this.grip(this.hands.right, fingers, toFace, 0.08 * w, 0.05 * w);
   }
 }

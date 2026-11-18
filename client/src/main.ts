@@ -51,6 +51,7 @@ post.sync();
 addEventListener('resize', () => post.sync());
 input.sensitivityScale = settings.sensitivity;
 input.invertY = settings.invertY;
+fx.gore = settings.gore;
 sfx.volume = settings.volume;
 const touch = mobile ? new TouchControls(input) : null;
 if (touch) {
@@ -87,6 +88,13 @@ showFov();
 fovEl.addEventListener('input', () => {
   settings.fov = Number(fovEl.value);
   showFov();
+  saveSettings(settings);
+});
+const goreEl = $<HTMLInputElement>('gore');
+goreEl.checked = settings.gore;
+goreEl.addEventListener('change', () => {
+  settings.gore = goreEl.checked;
+  fx.gore = settings.gore;
   saveSettings(settings);
 });
 invEl.addEventListener('change', () => {
@@ -191,11 +199,18 @@ function onEvent(ev: GameEvent) {
   const me = net.id;
   switch (ev.t) {
     case 'slap': {
-      if (ev.from !== me) others.get(ev.from)?.c.slap();
+      if (ev.from !== me) {
+        const victim = ev.to == null ? null : ev.to === me ? selfChar : others.get(ev.to)?.c;
+        others.get(ev.from)?.c.slap(victim ? () => victim.facePos() : null);
+      }
       if (ev.to != null) {
         const [pan, gain] = spatialId(ev.to === me ? null : ev.to);
         sfx.slapHit(pan, gain);
+        if (settings.gore) sfx.slapWet(pan, gain);
         if (ev.from === me) flashHit('');
+        // a tooth comes out about every other slap; the knockout blow takes more
+        faceHit(ev.from, ev.to, Math.random() < 0.45 ? 1 : 0, false);
+        if (ev.to === me) shake = Math.min(1, shake + 0.6);
       } else if (ev.from !== me) {
         const [pan, gain] = spatialId(ev.from);
         sfx.whoosh(pan, gain);
@@ -203,6 +218,7 @@ function onEvent(ev: GameEvent) {
       break;
     }
     case 'ko': {
+      faceHit(ev.from, ev.to, 2 + Math.floor(Math.random() * 2), true);
       const [pan, gain] = spatialId(ev.to === me ? null : ev.to);
       sfx.knockout(pan, gain);
       feed(ev.from === me ? `You knocked out <b>${esc(net.nameOf(ev.to))}</b>` :
@@ -399,7 +415,7 @@ function tick() {
     firing: false,
   }));
   if (flags & Flag.Slap && net.mode === 'slap') {
-    selfChar?.slap();
+    selfChar?.slap(nearestFace);
     sfx.whoosh(0, 0.8);
   }
   if (flags & Flag.Dry) sfx.dryFire();
@@ -579,6 +595,56 @@ function frame(now: number) {
   quality.frame();
   post.render();
   requestAnimationFrame(frame);
+}
+
+/**
+ * A slap landing on someone's face: their head snaps along the swing, blood sprays
+ * the same way and splats on the ground, and `teeth` teeth fly out.
+ */
+function faceHit(from: number, to: number, teeth: number, heavy: boolean) {
+  if (!net) return;
+  const me = net.id;
+  const victim = to === me ? selfChar : others.get(to)?.c;
+  if (!victim) return;
+  const vp = to === me ? new THREE.Vector3(net.me.x, net.me.y, net.me.z) : positions.get(to)?.clone().setY((positions.get(to)?.y ?? 1.5) - 1.5);
+  const sp = from === me ? new THREE.Vector3(net.me.x, net.me.y, net.me.z) : positions.get(from);
+  if (!vp || !sp) return;
+  const fwd = vp.clone().sub(sp).setY(0);
+  if (fwd.lengthSq() < 1e-4) fwd.set(0, 0, -1);
+  fwd.normalize();
+  // a right-handed slap sweeps toward the slapper's left
+  const push = new THREE.Vector3(fwd.z, 0, -fwd.x).multiplyScalar(0.8).addScaledVector(fwd, 0.6).normalize();
+  victim.slapped(push);
+  fx.slapGore(victim.facePos(), push, floorAt(vp.x, vp.z, vp.y + 0.3), teeth, heavy);
+}
+
+/** Height of the ground or box top under (x, z), at or below `y`. */
+function floorAt(x: number, z: number, y: number) {
+  let top = 0;
+  for (const b of boxes) {
+    if (b.max.y <= y && b.max.y > top && x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z) top = b.max.y;
+  }
+  return top;
+}
+fx.onTooth = (at) => {
+  const [pan, gain] = spatial(at, 3);
+  if (at.distanceTo(camera.position) < 15) sfx.tooth(pan, gain * 0.6);
+};
+
+/** Face of the nearest player within slapping reach in front of me (for the swing). */
+function nearestFace(): THREE.Vector3 | null {
+  if (!net) return null;
+  const yaw = input.viewYaw;
+  const fx0 = -Math.sin(yaw), fz0 = -Math.cos(yaw);
+  let best: { c: Character; d: number } | null = null;
+  for (const [id, o] of others) {
+    const p = positions.get(id);
+    if (!p) continue;
+    const dx = p.x - net.me.x, dz = p.z - net.me.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1.6 && d > 0.05 && (dx * fx0 + dz * fz0) / d > 0.5 && (!best || d < best.d)) best = { c: o.c, d };
+  }
+  return best ? best.c.facePos() : null;
 }
 
 function aimFovSlap(ads: number) { return settings.fov - 24 * ads; }

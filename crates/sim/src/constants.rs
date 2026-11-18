@@ -48,7 +48,8 @@ pub mod stamina {
 
 /// Slap mode: open-hand melee with knockback, stagger and knockouts.
 pub mod slap {
-    pub const RANGE: f32 = 1.8;
+    /// Centre to centre: an arm's length plus the lunge into the swing.
+    pub const RANGE: f32 = 1.1;
     /// cos(55°): target must be inside this cone in front of the slapper.
     pub const CONE_COS: f32 = 0.574;
     pub const COOLDOWN: f32 = 0.65;

@@ -11,12 +11,14 @@ export interface Settings {
   /** Base field of view in degrees (60..90). */
   fov: number;
   invertY: boolean;
+  /** Blood, splats and knocked-out teeth. */
+  gore: boolean;
 }
 
 const KEY = 'riftline.settings';
 
 export function loadSettings(): Settings {
-  const d: Settings = { quality: 'auto', sensitivity: 1, volume: 0.8, fov: 72, invertY: false };
+  const d: Settings = { quality: 'auto', sensitivity: 1, volume: 0.8, fov: 72, invertY: false, gore: true };
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>;
     return {
@@ -25,6 +27,7 @@ export function loadSettings(): Settings {
       volume: typeof s.volume === 'number' ? Math.min(1, Math.max(0, s.volume)) : d.volume,
       fov: typeof s.fov === 'number' ? Math.min(90, Math.max(60, s.fov)) : d.fov,
       invertY: s.invertY === true,
+      gore: s.gore !== false,
     };
   } catch {
     return d;

@@ -81,6 +81,12 @@ export class Fx {
   private holeNext = 0;
   private lights: { light: THREE.PointLight; age: number }[] = [];
   private casings: Casing[] = [];
+  private teeth: Casing[] = [];
+  private toothNext = 0;
+  private splats: THREE.Mesh[] = [];
+  private splatNext = 0;
+  /** Called when a knocked-out tooth first hits the ground. */
+  onTooth: (at: THREE.Vector3) => void = () => {};
   private casingNext = 0;
   /** Called when a casing first hits the ground (for the tink sound). */
   onCasing: (at: THREE.Vector3, shell: boolean) => void = () => {};
@@ -146,6 +152,48 @@ export class Fx {
       scene.add(mesh);
       this.casings.push({ mesh, vel: new THREE.Vector3(), spin: new THREE.Vector3(), floor: 0, age: 0, bounced: false, alive: false, shell });
     }
+    // teeth: a small crown and root, ivory
+    const enamel = new THREE.MeshStandardMaterial({ color: 0xeee6d2, roughness: 0.25, metalness: 0 });
+    const tooth = new THREE.CylinderGeometry(0.0045, 0.0028, 0.016, 7);
+    for (let i = 0; i < 24; i++) {
+      const mesh = new THREE.Mesh(tooth, enamel);
+      mesh.visible = false;
+      mesh.castShadow = true;
+      scene.add(mesh);
+      this.teeth.push({ mesh, vel: new THREE.Vector3(), spin: new THREE.Vector3(), floor: 0, age: 0, bounced: false, alive: false, shell: false });
+    }
+    // blood stains on the ground
+    const stainTex = (() => {
+      const s = 64;
+      const c = document.createElement('canvas');
+      c.width = c.height = s;
+      const g = c.getContext('2d')!;
+      for (let k = 0; k < 9; k++) {
+        const r = k === 0 ? s * 0.3 : s * (0.05 + Math.random() * 0.1);
+        const x = k === 0 ? s / 2 : s / 2 + (Math.random() - 0.5) * s * 0.7;
+        const y = k === 0 ? s / 2 : s / 2 + (Math.random() - 0.5) * s * 0.7;
+        const gr = g.createRadialGradient(x, y, 0, x, y, r);
+        gr.addColorStop(0, 'rgba(80,4,3,0.95)');
+        gr.addColorStop(0.7, 'rgba(70,4,3,0.85)');
+        gr.addColorStop(1, 'rgba(60,3,2,0)');
+        g.fillStyle = gr;
+        g.beginPath();
+        g.arc(x, y, r, 0, Math.PI * 2);
+        g.fill();
+      }
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      return t;
+    })();
+    const stainGeo = new THREE.PlaneGeometry(1, 1);
+    for (let i = 0; i < 40; i++) {
+      const m = new THREE.Mesh(stainGeo, new THREE.MeshStandardMaterial({ map: stainTex, transparent: true, depthWrite: false,
+        roughness: 0.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+      m.visible = false;
+      m.receiveShadow = true;
+      scene.add(m);
+      this.splats.push(m);
+    }
     // a fixed set of muzzle lights that stay in the scene (intensity 0 when idle)
     for (let i = 0; i < 3; i++) {
       const light = new THREE.PointLight(0xffb060, 0, 9, 2);
@@ -184,7 +232,7 @@ export class Fx {
     this.puff(at.clone().addScaledVector(dir, 0.1), dir.clone().multiplyScalar(0.6), 0x9a958c, 0.08, 0.5, 0.9, 0.35);
   }
 
-  private puff(at: THREE.Vector3, vel: THREE.Vector3, color: number, size: number, grow: number, life: number, alpha: number, gravity = -0.2) {
+  private puff(at: THREE.Vector3, vel: THREE.Vector3, color: number, size: number, grow: number, life: number, alpha: number, gravity = -0.2, additive = false) {
     const p = this.particles.find((x) => !x.alive);
     if (!p) return;
     p.sprite.position.copy(at);
@@ -198,7 +246,7 @@ export class Fx {
     p.alive = true;
     const m = p.sprite.material;
     m.color.setHex(color);
-    m.blending = gravity > 1 ? THREE.AdditiveBlending : THREE.NormalBlending;
+    m.blending = additive ? THREE.AdditiveBlending : THREE.NormalBlending;
     m.rotation = Math.random() * Math.PI * 2;
     p.sprite.visible = true;
   }
@@ -222,17 +270,68 @@ export class Fx {
       for (let i = 0; i < 5; i++) {
         const v = n.clone().multiplyScalar(2 + Math.random() * 3)
           .add(new THREE.Vector3(Math.random() - 0.5, Math.random(), Math.random() - 0.5).multiplyScalar(3));
-        this.puff(p, v, 0xffc070, 0.025, 0, 0.18 + Math.random() * 0.15, 1, 9.8);
+        this.puff(p, v, 0xffc070, 0.025, 0, 0.18 + Math.random() * 0.15, 1, 9.8, true);
       }
     }
   }
 
+  /** Blood and gore on (setting). */
+  gore = true;
+
   blood(p: THREE.Vector3, dir: THREE.Vector3) {
+    if (!this.gore) return;
     for (let i = 0; i < 4; i++) {
       const v = dir.clone().multiplyScalar(0.8 + Math.random())
         .add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.2, Math.random() - 0.5).multiplyScalar(0.7));
       this.puff(p, v, 0x5a0a08, 0.05, 0.35, 0.3 + Math.random() * 0.2, 0.75, 2);
     }
+  }
+
+  /**
+   * A slap to the face: a spray of blood thrown along the swing, drops that fall and
+   * leave splats on the ground, and teeth knocked out (`teeth` of them).
+   */
+  slapGore(face: THREE.Vector3, push: THREE.Vector3, floor: number, teeth: number, heavy: boolean) {
+    if (!this.gore) return;
+    const n = heavy ? 18 : 10;
+    for (let i = 0; i < n; i++) {
+      const v = push.clone().multiplyScalar(1.5 + Math.random() * 2.5)
+        .add(new THREE.Vector3(Math.random() - 0.5, Math.random() * 1.2, Math.random() - 0.5).multiplyScalar(1.4));
+      this.puff(face, v, i % 3 ? 0x6e0b08 : 0x9a1410, 0.02 + Math.random() * 0.03, 0.04, 0.5 + Math.random() * 0.4, 0.95, 9.8);
+    }
+    // a mist that hangs for a moment
+    this.puff(face.clone().addScaledVector(push, 0.15), push.clone().multiplyScalar(0.8), 0x7a0d0a, 0.08, 0.35, 0.45, 0.5, 0.5);
+    // splats where the drops come down
+    const drops = heavy ? 5 : 3;
+    for (let i = 0; i < drops; i++) {
+      const reach = 0.4 + Math.random() * (heavy ? 1.6 : 1.0);
+      const at = face.clone().addScaledVector(push, reach)
+        .add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).multiplyScalar(0.5));
+      at.y = floor;
+      setTimeout(() => this.splat(at, 0.06 + Math.random() * (heavy ? 0.2 : 0.12)), 250 + Math.random() * 250);
+    }
+    for (let i = 0; i < teeth; i++) {
+      const t = this.teeth[this.toothNext++ % this.teeth.length]!;
+      t.mesh.position.copy(face).addScaledVector(push, 0.08);
+      t.vel.copy(push).multiplyScalar(2.2 + Math.random() * 1.8)
+        .add(new THREE.Vector3((Math.random() - 0.5) * 1.2, 1.5 + Math.random() * 1.5, (Math.random() - 0.5) * 1.2));
+      t.spin.set(Math.random() * 40, Math.random() * 40, Math.random() * 40);
+      t.floor = floor;
+      t.age = 0;
+      t.bounced = false;
+      t.alive = true;
+      t.mesh.visible = true;
+    }
+  }
+
+  /** A blood stain on the ground. */
+  private splat(at: THREE.Vector3, size: number) {
+    const m = this.splats[this.splatNext++ % this.splats.length]!;
+    m.position.set(at.x, at.y + 0.006, at.z);
+    m.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2);
+    m.scale.set(size * (0.8 + Math.random() * 0.5), size, 1);
+    m.visible = true;
+    m.userData.age = 0;
   }
 
   /** Throw a spent case out of the ejection port to the right. */
@@ -252,10 +351,18 @@ export class Fx {
 
   update(dt: number) {
     const cam = this.camera.position;
-    for (const c of this.casings) {
+    for (const m of this.splats) {
+      if (!m.visible) continue;
+      m.userData.age = (m.userData.age as number) + dt;
+      const mat = m.material as THREE.MeshStandardMaterial;
+      mat.opacity = Math.min(1, Math.max(0, (40 - (m.userData.age as number)) / 10));
+      if ((m.userData.age as number) > 40) m.visible = false;
+    }
+    for (const c of [...this.casings, ...this.teeth]) {
       if (!c.alive) continue;
       c.age += dt;
-      if (c.age > 6) { c.alive = false; c.mesh.visible = false; continue; }
+      const isTooth = this.teeth.includes(c);
+      if (c.age > (isTooth ? 25 : 6)) { c.alive = false; c.mesh.visible = false; continue; }
       if (c.mesh.position.y > c.floor + 0.005 || c.vel.y > 0) {
         c.vel.y -= 9.81 * dt;
         c.mesh.position.addScaledVector(c.vel, dt);
@@ -264,7 +371,7 @@ export class Fx {
         c.mesh.rotation.z += c.spin.z * dt;
         if (c.mesh.position.y <= c.floor + 0.005) {
           c.mesh.position.y = c.floor + 0.005;
-          if (!c.bounced) this.onCasing(c.mesh.position, c.shell);
+          if (!c.bounced) (isTooth ? this.onTooth(c.mesh.position) : this.onCasing(c.mesh.position, c.shell));
           c.bounced = true;
           // bounce, losing most of the energy; lie flat once it stops
           c.vel.y = Math.abs(c.vel.y) > 0.6 ? -c.vel.y * 0.3 : 0;

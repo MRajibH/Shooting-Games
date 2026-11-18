@@ -814,7 +814,7 @@ mod tests {
                 out,
             });
         }
-        // 1 at the origin facing -z, 2 standing 1.2 m in front of it
+        // 1 at the origin facing -z, 2 standing 0.9 m in front of it
         g.slots.get_mut(&1).unwrap().state = PlayerState {
             id: 1,
             x: 0.0,
@@ -826,7 +826,7 @@ mod tests {
         g.slots.get_mut(&2).unwrap().state = PlayerState {
             id: 2,
             x: 0.0,
-            z: 8.8,
+            z: 9.1,
             grounded: true,
             stamina: 1.0,
             ..Default::default()
@@ -869,7 +869,7 @@ mod tests {
             // put the target back in reach and let the cooldown expire
             let st = &mut g.slots.get_mut(&2).unwrap().state;
             st.x = 0.0;
-            st.z = 8.8;
+            st.z = 9.1;
             st.y = 0.0;
             st.vx = 0.0;
             st.vz = 0.0;
