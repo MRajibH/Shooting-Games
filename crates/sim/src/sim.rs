@@ -307,6 +307,7 @@ pub fn spawn_state(id: u32, spawn: usize, armed: bool) -> PlayerState {
         stamina: 1.0,
         armed,
         hp: combat::MAX_HP,
+        armor: if armed { combat::ARMOR } else { 0.0 },
         mags: weapons::WEAPONS.map(|w| w.mag),
         reserves: weapons::WEAPONS.map(|w| w.reserve),
         trigger_spent: true,

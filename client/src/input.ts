@@ -37,6 +37,8 @@ export class Input {
 
   constructor(canvas: HTMLCanvasElement) {
     addEventListener('keydown', (e) => {
+      // arrow keys and space would otherwise scroll the page
+      if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
       this.keys.add(e.code);
       const n = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
       if (n >= 0) this.weapon = n;
@@ -55,7 +57,7 @@ export class Input {
       if (document.pointerLockElement !== canvas) return;
       const s = this.sensitivity * this.zoomScale * this.sensitivityScale;
       this.yaw -= e.movementX * s;
-      this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - e.movementY * s));
+      this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - e.movementY * s * (this.invertY ? -1 : 1)));
     });
   }
 
@@ -63,6 +65,8 @@ export class Input {
   zoomScale = 1;
   /** User setting, 0.25..3. */
   sensitivityScale = 1;
+  /** User setting: moving the mouse up looks down. */
+  invertY = false;
   /** Look slowdown while aim assist is on a target (1 = none). */
   friction = 1;
 
@@ -73,7 +77,7 @@ export class Input {
   look(dx: number, dy: number, scale = 0.0042) {
     const s = scale * this.sensitivityScale * this.zoomScale * this.friction;
     this.yaw -= dx * s;
-    this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - dy * s));
+    this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - dy * s * (this.invertY ? -1 : 1)));
   }
 
   get aiming() { return (this.mouse & 4) !== 0 || (this.touch.buttons & Button.Aim) !== 0; }
@@ -125,8 +129,8 @@ export class Input {
     const key = (c: string) => (this.keys.has(c) ? 1 : 0);
     let buttons = 0;
     if (key('Space')) buttons |= Button.Jump;
-    if (key('ShiftLeft')) buttons |= Button.Sprint;
-    if (key('ControlLeft') || key('KeyC')) buttons |= Button.Crouch;
+    if (key('ShiftLeft') || key('ShiftRight')) buttons |= Button.Sprint;
+    if (key('ControlLeft') || key('ControlRight') || key('KeyC')) buttons |= Button.Crouch;
     if (key('KeyR')) buttons |= Button.Reload;
     if (key('KeyQ')) buttons |= Button.LeanLeft;
     if (key('KeyE')) buttons |= Button.LeanRight;
@@ -137,8 +141,9 @@ export class Input {
     const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
     return {
       seq: ++this.seq,
-      moveX: clamp1(key('KeyD') - key('KeyA') + this.touch.mx),
-      moveZ: clamp1(key('KeyW') - key('KeyS') + this.touch.mz),
+      // WASD or the arrow keys
+      moveX: clamp1(Math.max(key('KeyD'), key('ArrowRight')) - Math.max(key('KeyA'), key('ArrowLeft')) + this.touch.mx),
+      moveZ: clamp1(Math.max(key('KeyW'), key('ArrowUp')) - Math.max(key('KeyS'), key('ArrowDown')) + this.touch.mz),
       yaw: this.viewYaw,
       pitch: this.viewPitch,
       buttons,

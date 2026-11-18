@@ -62,6 +62,10 @@
         background: rgba(255,255,255,.08); color: var(--dim); }
       #slots span.on { background: var(--accent); color: #1a1408; font-weight: 700; }
       #hp i { background: #dfe6ea; }
+      #armor i { background: #7fa7c9; }
+      .bar.thin { height: 4px; }
+      #menu label.check { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-size: 13px; }
+      #menu label.check input { width: auto; }
       #hp.low i { background: var(--bad); }
       #feed .w { color: var(--dim); font-size: 11px; padding: 0 4px; text-transform: uppercase; letter-spacing: .05em; }
       #matchbar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap;
@@ -204,12 +208,15 @@
             <option value="medium">Medium</option><option value="low">Low</option></select>
           <label for="sens">Look sensitivity <span id="sens-v"></span></label>
           <input id="sens" type="range" min="0.25" max="3" step="0.05" />
+          <label for="fov">Field of view <span id="fov-v"></span></label>
+          <input id="fov" type="range" min="60" max="90" step="1" />
+          <label class="check"><input id="invert" type="checkbox" /> Invert look up / down</label>
           <label for="vol">Volume</label>
           <input id="vol" type="range" min="0" max="1" step="0.05" />
         </details>
         <button type="submit">DEPLOY</button>
         <div class="keys">Playing alone? Two AI soldiers join you until another person arrives.</div>
-        <div class="keys">WASD move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse fire / slap · 1–4 weapons · R reload</div>
+        <div class="keys">WASD / arrow keys move · Shift sprint · Space jump / vault · C crouch · Q / E lean · Right mouse aim · Left mouse fire / slap · 1–4 weapons · R reload</div>
       </form>
     </div>
 
@@ -226,6 +233,7 @@
       <div id="feed"></div>
       <div id="board"></div>
       <div class="bars">
+        <div id="armor-wrap" class="hidden"><div class="bar-label">Armour plate</div><div class="bar thin" id="armor"><i></i></div></div>
         <div id="hp-wrap" class="hidden"><div class="bar-label">Health</div><div class="bar" id="hp"><i></i></div></div>
         <div id="daze-wrap"><div class="bar-label">Daze</div><div class="bar" id="daze"><i></i></div></div>
         <div><div class="bar-label">Stamina</div><div class="bar" id="stamina"><i></i></div></div>

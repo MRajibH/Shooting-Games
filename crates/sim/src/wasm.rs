@@ -100,6 +100,10 @@ impl Predictor {
         self.s.armed
     }
     #[wasm_bindgen(getter)]
+    pub fn armor(&self) -> f32 {
+        self.s.armor
+    }
+    #[wasm_bindgen(getter)]
     pub fn hp(&self) -> f32 {
         self.s.hp
     }

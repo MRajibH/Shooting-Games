@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use riftline_sim::ballistics::{point, ray_player, raycast_map, Bullet, Zone};
+use riftline_sim::ballistics::{penetrate, point, ray_player, raycast_map, Bullet, Zone};
 use riftline_sim::constants::{
     combat, rules, slap, MAX_REWIND_MS, SNAPSHOT_RATE, TICK_DT, TICK_RATE,
 };
@@ -455,39 +455,54 @@ impl Game {
     fn fly_bullets(&mut self) {
         let mut bullets = std::mem::take(&mut self.bullets);
         bullets.retain_mut(|b| {
-            let (o, d, l) = b.advance(TICK_DT);
-            let wall = raycast_map(o, d, l);
-            let max = wall.map_or(l, |h| h.t);
-            let mut hit: Option<(u32, f32, Zone)> = None;
+            let (mut o, d, mut l) = b.advance(TICK_DT);
             let team = self.slots.get(&b.owner).map_or(0, |s| s.state.team);
-            if let Some(states) = self.past(b.rewind) {
-                for t in states {
-                    // no friendly fire: rounds pass teammates
-                    if t.id == b.owner || (team != 0 && t.team == team) {
-                        continue;
-                    }
-                    if let Some((at, zone)) = ray_player(o, d, max, t) {
-                        if hit.is_none_or(|h| at < h.1) {
-                            hit = Some((t.id, at, zone));
+            // a round can punch through thin steel or wood several times in one tick
+            loop {
+                let wall = raycast_map(o, d, l);
+                let max = wall.map_or(l, |h| h.t);
+                let mut hit: Option<(u32, f32, Zone)> = None;
+                if let Some(states) = self.past(b.rewind) {
+                    for t in states {
+                        // no friendly fire: rounds pass teammates
+                        if t.id == b.owner || (team != 0 && t.team == team) {
+                            continue;
+                        }
+                        if let Some((at, zone)) = ray_player(o, d, max, t) {
+                            if hit.is_none_or(|h| at < h.1) {
+                                hit = Some((t.id, at, zone));
+                            }
                         }
                     }
                 }
-            }
-            if let Some((to, at, zone)) = hit {
-                b.travelled += at;
-                let alive = self.slots.get(&to).is_some_and(|s| s.state.dead <= 0.0);
-                if alive {
-                    self.damage(b.owner, to, b.weapon, b.damage(zone), zone, point(o, d, at));
+                if let Some((to, at, zone)) = hit {
+                    b.travelled += at;
+                    let alive = self.slots.get(&to).is_some_and(|s| s.state.dead <= 0.0);
+                    if alive {
+                        self.damage(b.owner, to, b.weapon, b.damage(zone), zone, point(o, d, at));
+                    }
+                    return false;
                 }
-                return false;
-            }
-            if let Some(h) = wall {
+                let Some(h) = wall else { break };
                 self.events.push(GameEvent::Impact {
                     p: point(o, d, h.t),
                     n: h.normal,
                     mat: h.mat,
                 });
-                return false;
+                match penetrate(&h) {
+                    Some(keep) if b.power * keep > 0.2 => {
+                        let through = h.t + h.thickness + 0.01;
+                        b.power *= keep;
+                        b.travelled += through;
+                        o = point(o, d, through);
+                        l -= through;
+                        if l <= 0.0 {
+                            b.pos = o;
+                            return !b.expired();
+                        }
+                    }
+                    _ => return false,
+                }
             }
             b.travelled += l;
             !b.expired()
@@ -504,6 +519,14 @@ impl Game {
             return;
         };
         let st = &mut t.state;
+        // a plate soaks part of a torso hit until its points are gone
+        let mut dmg = dmg;
+        let plate = zone == Zone::Torso && st.armor > 0.0;
+        if plate {
+            let soak = (dmg * combat::PLATE_ABSORB).min(st.armor);
+            st.armor -= soak;
+            dmg -= soak;
+        }
         st.hp -= dmg;
         st.regen_cd = combat::REGEN_DELAY;
         self.events.push(GameEvent::Hit {
@@ -512,6 +535,7 @@ impl Game {
             dmg,
             zone,
             p,
+            plate,
         });
         if st.hp > 0.0 {
             return;
@@ -941,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn carbine_kills_in_four_torso_hits_then_respawns() {
+    fn carbine_kills_in_five_plated_torso_hits_then_respawns() {
         let mut g = duel();
         let mut seq = 0;
         while g.slots[&2].state.dead <= 0.0 && seq < 60 {
@@ -949,7 +973,8 @@ mod tests {
             tick(&mut g, seq, true, 1.15, weapons::RIFLE, 0.0);
         }
         let fired = 30 - g.slots[&1].state.mags[0];
-        assert_eq!(fired, 4, "31 damage per torso hit, 100 hp");
+        // the 50-point plate soaks 60 % of the first hits: 12.4 + 12.4 + 18.2 + 31 + 31
+        assert_eq!(fired, 5, "31 damage per torso hit, 100 hp behind a plate");
         assert_eq!((g.slots[&1].kills, g.slots[&2].deaths), (1, 1));
         for _ in 0..(combat::RESPAWN_TIME / TICK_DT) as u32 + 3 {
             seq += 1;
@@ -1278,5 +1303,57 @@ mod tests {
             "easy {easy} normal {normal} hard {hard}"
         );
         assert!(hard < 3.0 && easy < 30.0);
+    }
+
+    #[test]
+    fn plate_soaks_torso_hits_but_not_legs() {
+        let mut g = duel();
+        g.damage(1, 2, weapons::RIFLE, 30.0, Zone::Torso, [0.0; 3]);
+        let t = &g.slots[&2].state;
+        assert!(
+            (t.hp - 88.0).abs() < 1e-3 && (t.armor - 32.0).abs() < 1e-3,
+            "{t:?}"
+        );
+        g.damage(1, 2, weapons::RIFLE, 30.0, Zone::Limb, [0.0; 3]);
+        let t = &g.slots[&2].state;
+        assert!((t.hp - 58.0).abs() < 1e-3 && (t.armor - 32.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn shots_through_the_walkway_railing_still_hit() {
+        let mut g = duel();
+        // shooter on the walkway, target on the ground beyond the railing
+        {
+            let st = &mut g.slots.get_mut(&1).unwrap().state;
+            (st.x, st.y, st.z, st.yaw) = (-0.5, 3.0, -14.0, 0.0);
+            let st = &mut g.slots.get_mut(&2).unwrap().state;
+            (st.x, st.y, st.z) = (0.0, 0.0, -20.0);
+        }
+        let pitch = libm::atan2f(1.15 - 4.65, 6.0);
+        // the line of fire really does cross the 8 cm steel railing first
+        let o = riftline_sim::sim::muzzle_origin(&g.slots[&1].state);
+        let d = riftline_sim::sim::aim_dir(0.0, pitch);
+        let first = raycast_map(o, d, 10.0).expect("railing in the way");
+        assert!(
+            first.mat == map::mat::STEEL && first.thickness < 0.1,
+            "{first:?}"
+        );
+        for seq in 1..20 {
+            g.handle(RoomEvent::Input {
+                id: 1,
+                frames: vec![InputFrame {
+                    seq,
+                    pitch,
+                    buttons: button::AIM | button::FIRE,
+                    ..Default::default()
+                }],
+            });
+            g.step();
+        }
+        let t = &g.slots[&2].state;
+        assert!(
+            t.hp < combat::MAX_HP || t.dead > 0.0,
+            "railing stopped every round: {t:?}"
+        );
     }
 }

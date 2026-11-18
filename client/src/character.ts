@@ -188,6 +188,16 @@ export class Character {
     }
   }
 
+  /** Where spent cases come out (right side of the receiver), and the gun's right. */
+  ejectPort(): { at: THREE.Vector3; right: THREE.Vector3 } | null {
+    if (!this.gun || !this.gun.group.visible) return null;
+    const g = this.gun.group;
+    return {
+      at: new THREE.Vector3(0.035, 0.07, -0.06).applyMatrix4(g.matrixWorld),
+      right: new THREE.Vector3(1, 0.3, 0.2).normalize().applyQuaternion(g.quaternion),
+    };
+  }
+
   /** Recoil kick on the model (and pump / bolt cycling). */
   fire() { this.kickT = 0; }
 

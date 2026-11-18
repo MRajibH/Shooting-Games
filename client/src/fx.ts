@@ -71,6 +71,7 @@ const METAL = new Set([4, 5, 6]);
 interface Tracer { mesh: THREE.Mesh; from: THREE.Vector3; dir: THREE.Vector3; dist: number; travelled: number; speed: number; alive: boolean }
 interface Particle { sprite: THREE.Sprite; vel: THREE.Vector3; life: number; age: number; grow: number; size: number; gravity: number; alpha: number; alive: boolean }
 interface Flash { mesh: THREE.Object3D; age: number; alive: boolean }
+interface Casing { mesh: THREE.Mesh; vel: THREE.Vector3; spin: THREE.Vector3; floor: number; age: number; bounced: boolean; alive: boolean; shell: boolean }
 
 export class Fx {
   private tracers: Tracer[] = [];
@@ -79,6 +80,10 @@ export class Fx {
   private holes: THREE.Mesh[] = [];
   private holeNext = 0;
   private lights: { light: THREE.PointLight; age: number }[] = [];
+  private casings: Casing[] = [];
+  private casingNext = 0;
+  /** Called when a casing first hits the ground (for the tink sound). */
+  onCasing: (at: THREE.Vector3, shell: boolean) => void = () => {};
   private lightNext = 0;
   private flashTex = flashTexture();
   private softTex = radial([[0, 'rgba(255,255,255,1)'], [0.4, 'rgba(255,255,255,0.5)'], [1, 'rgba(255,255,255,0)']]);
@@ -127,6 +132,19 @@ export class Fx {
       m.visible = false;
       scene.add(m);
       this.holes.push(m);
+    }
+    // spent brass (rifle / SMG) and red plastic shells (shotgun)
+    const brass = new THREE.MeshStandardMaterial({ color: 0xc9a043, metalness: 0.9, roughness: 0.3 });
+    const shellMat = new THREE.MeshStandardMaterial({ color: 0x8a1f1a, roughness: 0.6 });
+    const caseGeo = new THREE.CylinderGeometry(0.0048, 0.0048, 0.045, 8);
+    const shellGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.065, 10);
+    for (let i = 0; i < 48; i++) {
+      const shell = i % 6 === 5;
+      const mesh = new THREE.Mesh(shell ? shellGeo : caseGeo, shell ? shellMat : brass);
+      mesh.visible = false;
+      mesh.castShadow = true;
+      scene.add(mesh);
+      this.casings.push({ mesh, vel: new THREE.Vector3(), spin: new THREE.Vector3(), floor: 0, age: 0, bounced: false, alive: false, shell });
     }
     // a fixed set of muzzle lights that stay in the scene (intensity 0 when idle)
     for (let i = 0; i < 3; i++) {
@@ -217,8 +235,46 @@ export class Fx {
     }
   }
 
+  /** Throw a spent case out of the ejection port to the right. */
+  eject(at: THREE.Vector3, right: THREE.Vector3, floor: number, shell: boolean) {
+    const pool = this.casings.filter((c) => c.shell === shell);
+    const c = pool.find((x) => !x.alive) ?? pool[this.casingNext++ % pool.length]!;
+    c.mesh.position.copy(at);
+    c.vel.copy(right).multiplyScalar(1.8 + Math.random()).add(new THREE.Vector3(0, 1.4 + Math.random() * 0.8, 0))
+      .add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).multiplyScalar(0.6));
+    c.spin.set(Math.random() * 30, Math.random() * 30, Math.random() * 30);
+    c.floor = floor;
+    c.age = 0;
+    c.bounced = false;
+    c.alive = true;
+    c.mesh.visible = true;
+  }
+
   update(dt: number) {
     const cam = this.camera.position;
+    for (const c of this.casings) {
+      if (!c.alive) continue;
+      c.age += dt;
+      if (c.age > 6) { c.alive = false; c.mesh.visible = false; continue; }
+      if (c.mesh.position.y > c.floor + 0.005 || c.vel.y > 0) {
+        c.vel.y -= 9.81 * dt;
+        c.mesh.position.addScaledVector(c.vel, dt);
+        c.mesh.rotation.x += c.spin.x * dt;
+        c.mesh.rotation.y += c.spin.y * dt;
+        c.mesh.rotation.z += c.spin.z * dt;
+        if (c.mesh.position.y <= c.floor + 0.005) {
+          c.mesh.position.y = c.floor + 0.005;
+          if (!c.bounced) this.onCasing(c.mesh.position, c.shell);
+          c.bounced = true;
+          // bounce, losing most of the energy; lie flat once it stops
+          c.vel.y = Math.abs(c.vel.y) > 0.6 ? -c.vel.y * 0.3 : 0;
+          c.vel.x *= 0.5;
+          c.vel.z *= 0.5;
+          c.spin.multiplyScalar(0.5);
+          if (c.vel.y === 0) { c.mesh.rotation.x = Math.PI / 2; c.vel.set(0, 0, 0); }
+        }
+      }
+    }
     for (const t of this.tracers) {
       if (!t.alive) continue;
       t.travelled += t.speed * dt;

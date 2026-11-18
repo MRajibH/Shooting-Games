@@ -6,7 +6,25 @@ prediction; Vite + TypeScript + three.js for rendering. Design and roadmap: [doc
 
 ## Status
 
-**Milestone 6 done: phones and tablets.** (5: smarter AI players. 4: modes, match flow, first bots. 3: combat. 2: movement, map, character, Slap mode.)
+**Milestone 7 done: polish.** (6: phones and tablets. 5: smarter AI players. 4: modes, match flow, first bots. 3: combat. 2: movement, map, character, Slap mode.)
+
+- **Arrow keys** move as well as WASD; right Shift / right Ctrl sprint and crouch for arrow-key players.
+- **Armour plates:** everyone spawns with a 50-point plate (Combat modes) that soaks 60 % of torso
+  damage until it is used up; head and leg hits go around it. A plated torso takes 5 carbine hits
+  instead of 4, and a bolt-rifle body shot no longer kills outright (a headshot still does).
+  Plate hits clank instead of drawing blood; the HUD shows the plate.
+- **Penetration:** rounds punch through thin steel and wood (walkway railings and deck) at reduced
+  power, leaving a hole on the way.
+- **Footsteps** for everyone, per surface (asphalt and concrete, steel deck and containers, wood),
+  quieter crouched and louder sprinting, plus a thud on landing.
+- **Shell casings** eject from the right of the receiver (brass, or red shells from the shotgun when
+  it is pumped) and bounce, roll and tink on the ground.
+- **Camera:** gentle head bob while moving (almost none when aiming) and a dip on landing.
+- **Post-processing by quality:** High adds ground-truth ambient occlusion (contact shadows) and a
+  restrained bloom on very bright things; Medium bloom only; Low none. Rendering goes through a
+  multisampled HDR target so edges stay smooth. Auto quality now steps back up when there is headroom.
+- **Settings:** field of view (60–90°) and invert look, alongside graphics, sensitivity and volume.
+
 
 - **Touch controls** (switch on automatically when the main pointer is a finger; `?touch=1` or
   `?touch=0` to force): a floating movement stick on the left half (push past the edge to
@@ -136,6 +154,6 @@ npm run build && npm start  # one Rust binary on :8080 serving the game
 ```
 
 Open two tabs to see multiplayer. `?room=CODE&name=You` joins a private room.
-Controls: click to capture the mouse, WASD, Shift sprint, Space jump / vault, C / Ctrl crouch,
+Controls: click to capture the mouse, WASD or arrow keys, Shift sprint, Space jump / vault, C / Ctrl crouch,
 Q / E lean, right mouse aim, left mouse fire (slap in Slap mode), 1–4 or wheel weapons, R reload,
 B fire mode, Shift while aimed holds breath. `?mode=combat|tdm|domination|slap` preselects the mode.

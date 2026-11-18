@@ -31,6 +31,23 @@ pub struct MapHit {
     pub t: f32,
     pub normal: V3,
     pub mat: u8,
+    /// How much material the ray crosses (entry to exit), metres.
+    pub thickness: f32,
+}
+
+/// Rounds pass through thin steel and wood (railings, the walkway deck) at reduced power.
+pub const MAX_PENETRATION: f32 = 0.25;
+
+/// Power kept after punching through a surface, or None if it stops the round.
+pub fn penetrate(h: &MapHit) -> Option<f32> {
+    if h.thickness > MAX_PENETRATION {
+        return None;
+    }
+    match h.mat {
+        map::mat::STEEL => Some(0.55),
+        map::mat::WOOD => Some(0.7),
+        _ => None,
+    }
 }
 
 /// Nearest map surface along `o + d * t`, t in [0, max]. `d` must be unit length.
@@ -43,6 +60,7 @@ pub fn raycast_map(o: V3, d: V3, max: f32) -> Option<MapHit> {
                 t,
                 normal: [0.0, 1.0, 0.0],
                 mat: GROUND_MAT,
+                thickness: f32::MAX,
             });
         }
     }
@@ -51,6 +69,7 @@ pub fn raycast_map(o: V3, d: V3, max: f32) -> Option<MapHit> {
         let mut axis = usize::MAX;
         let mut sign = 0.0;
         let mut ok = true;
+        let mut exit = f32::MAX;
         for a in 0..3 {
             if d[a].abs() < 1e-9 {
                 if o[a] < b.min[a] || o[a] > b.max[a] {
@@ -72,6 +91,7 @@ pub fn raycast_map(o: V3, d: V3, max: f32) -> Option<MapHit> {
                 sign = s;
             }
             t1 = t1.min(f);
+            exit = exit.min(f);
             if t0 > t1 {
                 ok = false;
                 break;
@@ -84,6 +104,7 @@ pub fn raycast_map(o: V3, d: V3, max: f32) -> Option<MapHit> {
                 t: t0,
                 normal,
                 mat: b.mat,
+                thickness: exit - t0,
             });
         }
     }
@@ -213,6 +234,8 @@ pub struct Bullet {
     pub age: f32,
     /// Ticks to rewind other players by when testing hits (lag compensation).
     pub rewind: u32,
+    /// Fraction of damage left after going through things.
+    pub power: f32,
 }
 
 impl Bullet {
@@ -226,6 +249,7 @@ impl Bullet {
             travelled: 0.0,
             age: 0.0,
             rewind,
+            power: 1.0,
         }
     }
 
@@ -266,7 +290,7 @@ impl Bullet {
             Zone::Torso => 1.0,
             Zone::Limb => s.limb_mult,
         };
-        s.damage * weapons::falloff(s, self.travelled) * m
+        s.damage * weapons::falloff(s, self.travelled) * m * self.power
     }
 }
 
@@ -333,5 +357,17 @@ mod tests {
         let mut s = Bullet::new(1, weapons::SHOTGUN, [0.0; 3], [1.0, 0.0, 0.0], 0);
         s.travelled = 30.0;
         assert!(s.damage(Zone::Torso) < 3.0);
+    }
+
+    #[test]
+    fn rounds_go_through_railings_but_not_walls() {
+        // the walkway railing at z = -15.46 is 8 cm of steel
+        let h = raycast_map([0.0, 3.5, -10.0], [0.0, 0.0, -1.0], 20.0).unwrap();
+        assert_eq!(h.mat, map::mat::STEEL);
+        assert!(h.thickness < 0.1, "{h:?}");
+        assert!(penetrate(&h).is_some());
+        // a concrete barrier stops it
+        let b = raycast_map([0.0, 0.5, 10.0], [0.0, 0.0, -1.0], 20.0).unwrap();
+        assert!(penetrate(&b).is_none(), "{b:?}");
     }
 }

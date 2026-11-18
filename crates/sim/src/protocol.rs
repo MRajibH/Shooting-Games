@@ -69,6 +69,8 @@ pub struct PlayerState {
     /// False in Slap mode (empty hands).
     pub armed: bool,
     pub hp: f32,
+    /// Armour plate points left (torso only).
+    pub armor: f32,
     /// Seconds until respawn while dead.
     pub dead: f32,
     pub regen_cd: f32,
@@ -205,6 +207,9 @@ pub enum GameEvent {
         dmg: f32,
         zone: crate::ballistics::Zone,
         p: [f32; 3],
+        /// The round struck an armour plate.
+        #[serde(default)]
+        plate: bool,
     },
     Kill {
         from: u32,

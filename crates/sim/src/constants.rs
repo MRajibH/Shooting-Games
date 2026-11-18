@@ -73,6 +73,9 @@ pub mod combat {
     pub const LEAN_SHIFT: f32 = 0.45;
     /// Bullets are dropped after this long in flight.
     pub const BULLET_LIFE: f32 = 2.5;
+    /// Body armour plate: soaks this share of torso damage until its points run out.
+    pub const ARMOR: f32 = 50.0;
+    pub const PLATE_ABSORB: f32 = 0.6;
 }
 
 /// Match rules per mode.

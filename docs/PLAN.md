@@ -75,7 +75,7 @@ Key netcode rules:
 4. **Modes + rooms** (done) — team deathmatch and domination, round flow, quick play and room codes, scoreboard and results. Pulled forward from milestone 5: bots that keep a lone player company (ground navigation, line-of-sight targeting, human reaction and aim error).
 5. **Bots** (done) — difficulty levels, upper-level navigation (stairs and walkway), cover, hearing gunfire, memory of last known positions. Rooms still get bots only when one person is alone (by request).
 6. **Mobile** (done) — touch stick and buttons, touch-only aim assist, phone HUD with landscape prompt and full screen, automatic quality and resolution scaling, settings.
-7. **Polish** — rigged characters with animation blending and IK, post-processing, decals, positional audio, kill feed, hit markers, settings, tuning.
+7. **Polish** (done) — arrow-key movement, armour plates, thin-material penetration, per-surface footsteps and landings, shell casings, head bob, post-processing (GTAO + bloom) by quality tier, FOV and invert settings. Earlier milestones already covered the rigged character with IK, decals, positional audio, kill feed, hit markers and settings.
 
 ## Verification
 

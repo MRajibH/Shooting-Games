@@ -44,6 +44,7 @@ export interface PlayerState {
   team: number;
   armed: boolean;
   hp: number;
+  armor: number;
   dead: number;
   regenCd: number;
   weapon: number;
@@ -96,7 +97,7 @@ export type GameEvent =
   | { t: 'respawn'; id: number }
   | { t: 'fire'; id: number; w: number; o: V3; d: V3 }
   | { t: 'impact'; p: V3; n: V3; mat: number }
-  | { t: 'hit'; from: number; to: number; dmg: number; zone: Zone; p: V3 }
+  | { t: 'hit'; from: number; to: number; dmg: number; zone: Zone; p: V3; plate: boolean }
   | { t: 'kill'; from: number; to: number; w: number; head: boolean; dist: number }
   | { t: 'capture'; flag: number; team: number };
 

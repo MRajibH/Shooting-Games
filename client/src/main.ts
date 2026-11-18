@@ -6,6 +6,7 @@ import { Fx } from './fx';
 import { spec, weapons } from './guns';
 import { Input } from './input';
 import { Flag, Net } from './net';
+import { Post } from './post';
 import { Quality, loadSettings, saveSettings, type QualityLevel } from './quality';
 import { TouchControls, isTouchDevice } from './touch';
 import type { Difficulty, GameEvent, MatchState, Mode, RosterEntry, V3 } from './protocol';
@@ -43,7 +44,13 @@ const mobile = isTouchDevice();
 document.body.classList.toggle('touch', mobile);
 const settings = loadSettings();
 const quality = new Quality(renderer, world.sun, settings.quality, mobile);
+const post = new Post(renderer, scene, camera);
+quality.onApply = (tier) => { post.setTier(tier); post.sync(); };
+post.setTier(quality.tier);
+post.sync();
+addEventListener('resize', () => post.sync());
 input.sensitivityScale = settings.sensitivity;
+input.invertY = settings.invertY;
 sfx.volume = settings.volume;
 const touch = mobile ? new TouchControls(input) : null;
 if (touch) {
@@ -69,6 +76,22 @@ sensEl.addEventListener('input', () => {
   settings.sensitivity = Number(sensEl.value);
   input.sensitivityScale = settings.sensitivity;
   showSens();
+  saveSettings(settings);
+});
+const fovEl = $<HTMLInputElement>('fov');
+const invEl = $<HTMLInputElement>('invert');
+fovEl.value = String(settings.fov);
+invEl.checked = settings.invertY;
+const showFov = () => ($('fov-v').textContent = `${fovEl.value}°`);
+showFov();
+fovEl.addEventListener('input', () => {
+  settings.fov = Number(fovEl.value);
+  showFov();
+  saveSettings(settings);
+});
+invEl.addEventListener('change', () => {
+  settings.invertY = invEl.checked;
+  input.invertY = settings.invertY;
   saveSettings(settings);
 });
 volEl.addEventListener('input', () => {
@@ -152,6 +175,7 @@ function start(name: string, room: string | undefined, mode: Mode, ai: Difficult
     const combat = net!.mode !== 'slap';
     $('daze-wrap').classList.toggle('hidden', combat);
     $('hp-wrap').classList.toggle('hidden', !combat);
+    $('armor-wrap').classList.toggle('hidden', !combat);
     $('ammo').classList.toggle('hidden', !combat);
     $('help').textContent = combat
       ? '1–4 / wheel weapons · R reload · B fire mode · Right mouse aim · Shift (aimed) hold breath · Esc release mouse'
@@ -195,6 +219,8 @@ function onEvent(ev: GameEvent) {
       const s = spec(ev.w);
       const end = shotEnd(o, d);
       fx.tracer(from, end, s.muzzleVelocity);
+      const floor = (positions.get(ev.id)?.y ?? 1.5) - 1.5;
+      if (c) ejectFrom(c, floor, ev.w);
       for (let i = 1; i < Math.min(s.pellets, 5); i++) {
         const jitter = d.clone().add(new THREE.Vector3().randomDirection().multiplyScalar(s.hipSpread * 0.8)).normalize();
         fx.tracer(from, shotEnd(o, jitter), s.muzzleVelocity);
@@ -217,7 +243,10 @@ function onEvent(ev: GameEvent) {
     case 'hit': {
       const p = v3(ev.p);
       const shooter = ev.from === me ? camera.position : positions.get(ev.from);
-      fx.blood(p, shooter ? p.clone().sub(shooter).normalize() : new THREE.Vector3(0, 1, 0));
+      if (ev.plate) {
+        const [pan, gain] = ev.to === me ? [0, 1] : spatial(p, 5);
+        sfx.plate(pan, gain);
+      } else fx.blood(p, shooter ? p.clone().sub(shooter).normalize() : new THREE.Vector3(0, 1, 0));
       if (ev.from === me) {
         flashHit(ev.zone === 'head' ? 'head' : '');
         sfx.hitMarker(ev.zone === 'head', false);
@@ -338,7 +367,7 @@ function spatialId(id: number | null): [number, number] {
 let fpsFrames = 0;
 let fps = 0;
 setInterval(() => { fps = fpsFrames; fpsFrames = 0; }, 1000);
-Object.assign(window, { __riftline: { get fps() { return fps; }, renderer, scene, camera, input, quality, touch, get net() { return net; }, others, get self() { return selfChar; } } });
+Object.assign(window, { __riftline: { get fps() { return fps; }, renderer, scene, camera, input, quality, touch, post, sfx, fx, get net() { return net; }, others, get self() { return selfChar; } } });
 
 const DT = tickDt();
 const camPos = new THREE.Vector3();
@@ -388,6 +417,7 @@ function tick() {
     sfx.gunshot(w, 0, 0);
     input.kick(me.kickPitch, me.kickYaw);
     selfChar?.fire();
+    if (selfChar) ejectFrom(selfChar, me.y, w);
   }
   // reload foley from my own predicted weapon state
   if (me.armed) {
@@ -432,6 +462,8 @@ function frame(now: number) {
       crouched: me.crouched, grounded: me.grounded, lean: me.lean, stun: me.stun, ko: me.ko,
       armed, weapon: me.weapon, ads: me.ads, reload: me.reload, reloadLen: me.reloadLen, swap: me.swap,
       lowered: me.lowered, dead: me.dead }, dt);
+    const selfSpeed = Math.hypot(me.vx, me.vz);
+    steps(net.id, me.x, me.y, me.z, me.grounded, me.crouched, selfSpeed, me.dead > 0 || me.ko > 0, true);
 
     const seen = new Set<number>();
     for (const p of net.remotes()) {
@@ -443,6 +475,7 @@ function frame(now: number) {
         others.set(p.id, o);
       }
       o.c.update(p, dt);
+      steps(p.id, p.x, p.y, p.z, p.grounded, p.crouched, Math.hypot(p.vx, p.vz), p.dead > 0 || p.ko > 0, false);
       positions.set(p.id, new THREE.Vector3(p.x, p.y + 1.5, p.z));
     }
     for (const [id, o] of others) if (!seen.has(id)) { o.c.dispose(scene); others.delete(id); positions.delete(id); }
@@ -454,11 +487,12 @@ function frame(now: number) {
     const scoped = !!sp && me.weapon === 3 && ads > 0.92 && !dead;
     eye += (eyeHeight(me.crouched) - eye) * Math.min(1, dt * 10);
     pivotY = Math.abs(me.y - pivotY) > 0.6 ? me.y : pivotY + (me.y - pivotY) * Math.min(1, dt * 14);
-    const wantFov = sp ? 72 + (sp.adsFov - 72) * ads : aimFovSlap(ads);
+    const base = settings.fov;
+    const wantFov = sp ? base + (Math.min(sp.adsFov, base) - base) * ads : aimFovSlap(ads);
     fov = scoped ? sp!.adsFov : fov + (wantFov - fov) * Math.min(1, dt * 14);
     camera.fov = fov;
     camera.updateProjectionMatrix();
-    input.zoomScale = Math.tan((fov * Math.PI) / 360) / Math.tan((72 * Math.PI) / 360);
+    input.zoomScale = Math.tan((fov * Math.PI) / 360) / Math.tan((base * Math.PI) / 360);
     const yaw = input.viewYaw, pitch = input.viewPitch;
     fwd.set(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
     rightV.set(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -469,6 +503,12 @@ function frame(now: number) {
     const hit = raycastBoxes(boxes, pivot, back, want, 0.2);
     camDist = hit < camDist ? hit : camDist + (hit - camDist) * Math.min(1, dt * 6);
     camPos.copy(pivot).addScaledVector(back, camDist);
+    // head bob while walking (much less when aiming), and a dip on landing
+    const bobK = me.grounded && !down ? Math.min(1, selfSpeed / 3) * (1 - 0.8 * ads) : 0;
+    bobPhase += selfSpeed * dt * (Math.PI / 0.75);
+    camPos.y += Math.sin(bobPhase * 2) * 0.022 * bobK - landDip;
+    camPos.addScaledVector(rightV, Math.sin(bobPhase) * 0.012 * bobK);
+    landDip = Math.max(0, landDip - dt * 0.6);
     if (shake > 0) {
       camPos.add(new THREE.Vector3().randomDirection().multiplyScalar(shake * 0.04));
       shake = Math.max(0, shake - dt * 3);
@@ -487,6 +527,7 @@ function frame(now: number) {
     st.classList.toggle('ex', me.exhausted);
     ($('daze').firstElementChild as HTMLElement).style.transform = `scaleX(${me.daze / 100})`;
     ($('hp').firstElementChild as HTMLElement).style.transform = `scaleX(${me.hp / 100})`;
+    ($('armor').firstElementChild as HTMLElement).style.transform = `scaleX(${me.armor / 50})`;
     $('hp').classList.toggle('low', me.hp < 35);
     const hurt = armed ? Math.max(0, 1 - me.hp / 70) * 0.8 : me.daze / 100 + (me.stun > 0 ? 0.3 : 0);
     $('vignette').style.opacity = String(Math.min(1, hurt));
@@ -536,11 +577,70 @@ function frame(now: number) {
 
   fx.update(dt);
   quality.frame();
-  renderer.render(scene, camera);
+  post.render();
   requestAnimationFrame(frame);
 }
 
-function aimFovSlap(ads: number) { return 72 - 24 * ads; }
+function aimFovSlap(ads: number) { return settings.fov - 24 * ads; }
+
+let bobPhase = 0;
+let landDip = 0;
+
+/** Spent case out of a gun's ejection port; pump and bolt guns eject when cycled. */
+function ejectFrom(c: Character, floor: number, w: number) {
+  const go = () => {
+    const port = c.ejectPort();
+    if (port) fx.eject(port.at, port.right, floor, w === 2);
+  };
+  if (w === 2 || w === 3) setTimeout(go, 300);
+  else go();
+}
+fx.onCasing = (at, shell) => {
+  const [pan, gain] = spatial(at, 3);
+  if (at.distanceTo(camera.position) < 14) sfx.casing(pan, gain * 0.5, shell);
+};
+
+/** Material under a point: the top of a map box there, else asphalt. */
+function surfaceAt(x: number, y: number, z: number) {
+  for (const b of boxes) {
+    if (Math.abs(b.max.y - y) < 0.08 && x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z) return b.mat;
+  }
+  return 7;
+}
+
+/** Footsteps by stride, per surface, for me and everyone nearby; a thud on landing. */
+const walkers = new Map<number, { dist: number; x: number; z: number; air: boolean; peak: number }>();
+function steps(id: number, x: number, y: number, z: number, grounded: boolean, crouched: boolean, speed: number, down: boolean, mine: boolean) {
+  let w = walkers.get(id);
+  if (!w) walkers.set(id, (w = { dist: 0, x, z, air: false, peak: y }));
+  const moved = Math.hypot(x - w.x, z - w.z);
+  w.x = x;
+  w.z = z;
+  if (down || moved > 3) { w.dist = 0; return; }
+  if (!grounded) {
+    w.peak = w.air ? Math.max(w.peak, y) : y;
+    w.air = true;
+    return;
+  }
+  const pos = new THREE.Vector3(x, y + 0.1, z);
+  const [pan, gain] = mine ? [0, 0.6] : spatial(pos, 5);
+  if (w.air) {
+    w.air = false;
+    const fall = w.peak - y;
+    if (fall > 0.3) {
+      sfx.land(surfaceAt(x, y, z), Math.min(1, fall / 2) * gain);
+      if (mine) landDip = Math.min(0.12, fall * 0.05);
+    }
+  }
+  if (speed < 0.5) return;
+  w.dist += moved;
+  const stride = crouched ? 0.55 : speed > 4 ? 1.05 : 0.75;
+  if (w.dist >= stride) {
+    w.dist -= stride;
+    if (!mine && pos.distanceTo(camera.position) > 30) return;
+    sfx.footstep(surfaceAt(x, y, z), pan, gain, crouched ? 0.3 : speed > 4 ? 1.4 : 1);
+  }
+}
 
 // ---- match HUD, capture points, team name tags ----
 

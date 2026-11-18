@@ -8,18 +8,23 @@ export interface Settings {
   sensitivity: number;
   /** 0..1 */
   volume: number;
+  /** Base field of view in degrees (60..90). */
+  fov: number;
+  invertY: boolean;
 }
 
 const KEY = 'riftline.settings';
 
 export function loadSettings(): Settings {
-  const d: Settings = { quality: 'auto', sensitivity: 1, volume: 0.8 };
+  const d: Settings = { quality: 'auto', sensitivity: 1, volume: 0.8, fov: 72, invertY: false };
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>;
     return {
       quality: ['auto', 'high', 'medium', 'low'].includes(s.quality as string) ? s.quality! : d.quality,
       sensitivity: typeof s.sensitivity === 'number' ? Math.min(3, Math.max(0.25, s.sensitivity)) : d.sensitivity,
       volume: typeof s.volume === 'number' ? Math.min(1, Math.max(0, s.volume)) : d.volume,
+      fov: typeof s.fov === 'number' ? Math.min(90, Math.max(60, s.fov)) : d.fov,
+      invertY: s.invertY === true,
     };
   } catch {
     return d;
@@ -42,12 +47,17 @@ const TIERS = {
  * and the tier itself drops when even that is not enough.
  */
 export class Quality {
-  private tier: keyof typeof TIERS = 'high';
+  tier: keyof typeof TIERS = 'high';
   private scale = 1;
   private frames = 0;
   private since = performance.now();
   private slowSeconds = 0;
+  private fastSeconds = 0;
+  /** Best tier auto may climb back to. */
+  private top: keyof typeof TIERS = 'high';
   fps = 0;
+  /** Called after the tier or resolution changes. */
+  onApply: (tier: 'high' | 'medium' | 'low') => void = () => {};
 
   constructor(private renderer: THREE.WebGLRenderer, private sun: THREE.DirectionalLight, private level: QualityLevel, mobile: boolean) {
     this.set(level, mobile);
@@ -58,6 +68,7 @@ export class Quality {
   set(level: QualityLevel, mobile = false) {
     this.level = level;
     this.tier = level === 'auto' ? (mobile ? 'medium' : 'high') : level;
+    this.top = this.tier;
     this.scale = 1;
     this.apply();
   }
@@ -70,6 +81,7 @@ export class Quality {
       this.sun.shadow.map?.dispose();
       this.sun.shadow.map = null;
     }
+    this.onApply(this.tier);
   }
 
   /** Call once per rendered frame. */
@@ -90,6 +102,15 @@ export class Quality {
       this.apply();
     }
     this.slowSeconds = this.fps < 40 && this.scale <= 0.6 ? this.slowSeconds + 1 : 0;
+    // plenty of headroom for a while (e.g. after the window was in the background): step back up
+    this.fastSeconds = this.fps > 58 && this.scale >= 1 ? this.fastSeconds + 1 : 0;
+    if (this.fastSeconds >= 5 && this.tier !== this.top) {
+      this.tier = this.tier === 'low' ? 'medium' : 'high';
+      this.scale = 0.8;
+      this.fastSeconds = 0;
+      this.apply();
+      return;
+    }
     if (this.slowSeconds >= 3 && this.tier !== 'low') {
       this.tier = this.tier === 'high' ? 'medium' : 'low';
       this.scale = 0.8;

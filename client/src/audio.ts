@@ -180,4 +180,54 @@ export class Sfx {
     this.burst(o, t, 0.12, 'lowpass', 400, 1, 1.2);
     this.tone(o, t, 120, 50, 0.2, 0.6);
   }
+
+  /**
+   * A footstep on a surface: 0 concrete, 1 brick, 2 plaster, 3 wood, 4/5 container steel,
+   * 6 steel deck, 7 asphalt. `weight` is 0.3 sneaking .. 1.4 sprinting.
+   */
+  footstep(mat: number, pan = 0, gain = 1, weight = 1) {
+    if (!this.ctx || gain < 0.02) return;
+    const t = this.ctx.currentTime;
+    const o = this.out(pan, gain * weight * 0.55);
+    const metal = mat === 4 || mat === 5 || mat === 6;
+    const wood = mat === 3;
+    // heel then toe
+    for (const [dt, k] of [[0, 1], [0.045, 0.6]] as const) {
+      this.burst(o, t + dt, 0.05, 'bandpass', wood ? 500 : metal ? 1400 : 900 + Math.random() * 300, 1.2, k);
+      if (metal) this.tone(o, t + dt, 380 + Math.random() * 120, 300, mat === 6 ? 0.18 : 0.25, 0.12 * k, 'triangle');
+      if (wood) this.tone(o, t + dt, 180, 120, 0.08, 0.25 * k);
+    }
+    // grit on asphalt and concrete
+    if (!metal && !wood) this.burst(o, t + 0.01, 0.07, 'highpass', 3500, 0.5, 0.15);
+  }
+
+  /** Body landing after a jump or fall. */
+  land(mat: number, gain = 1) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.out(0, gain);
+    this.burst(o, t, 0.12, 'lowpass', 500, 0.8, 1);
+    if (mat >= 4 && mat <= 6) this.tone(o, t, 260, 180, 0.3, 0.2, 'triangle');
+  }
+
+  /** Brass case hitting the ground. */
+  casing(pan = 0, gain = 0.4, shell = false) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.out(pan, gain);
+    if (shell) this.burst(o, t, 0.05, 'bandpass', 900, 2, 0.6);
+    else {
+      this.tone(o, t, 5200 + Math.random() * 1500, 4800, 0.12, 0.08, 'sine');
+      this.tone(o, t + 0.07, 5600 + Math.random() * 1500, 5000, 0.08, 0.04, 'sine');
+    }
+  }
+
+  /** Round stopped by body armour. */
+  plate(pan = 0, gain = 1) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.out(pan, gain);
+    this.burst(o, t, 0.06, 'bandpass', 1800, 1.5, 0.9);
+    this.tone(o, t, 900, 700, 0.12, 0.15, 'square');
+  }
 }
