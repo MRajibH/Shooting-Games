@@ -328,17 +328,17 @@ impl Game {
                 s.last = Some(f);
                 let was_down = s.state.ko > 0.0 || s.state.dead > 0.0;
                 let r = step_player(&mut s.state, &f, TICK_DT);
+                // trust the client's view time only within the rewind cap
+                let behind = self.tick as f64 - f.view.round();
+                let rewind = if f.view > 0.0 && behind > 0.0 {
+                    (behind as u32).min(MAX_REWIND)
+                } else {
+                    0
+                };
                 if r.slap {
-                    slappers.push(id);
+                    slappers.push((id, rewind));
                 }
                 if !r.shots.is_empty() {
-                    // trust the client's view time only within the rewind cap
-                    let behind = self.tick as f64 - f.view.round();
-                    let rewind = if f.view > 0.0 && behind > 0.0 {
-                        (behind as u32).min(MAX_REWIND)
-                    } else {
-                        0
-                    };
                     volleys.push((id, s.state.weapon, r.shots, rewind));
                 }
                 if was_down && s.state.ko <= 0.0 && s.state.dead <= 0.0 {
@@ -355,8 +355,8 @@ impl Game {
             self.events.push(GameEvent::Respawn { id });
         }
         if self.mode == Mode::Slap {
-            for id in slappers {
-                self.resolve_slap(id);
+            for (id, rewind) in slappers {
+                self.resolve_slap(id, rewind);
             }
         }
 
@@ -566,18 +566,27 @@ impl Game {
 
     /// Nearest standing player inside the slapper's reach and frontal cone gets
     /// knocked back, staggered and dazed; full daze is a knockout.
-    fn resolve_slap(&mut self, from: u32) {
+    /// Slaps are lag-compensated like bullets: reach and facing are checked against
+    /// where the targets were on the slapper's screen (`rewind` ticks ago, capped at
+    /// 250 ms); the knockback lands on them where they are now.
+    fn resolve_slap(&mut self, from: u32, rewind: u32) {
         if self.game.phase != Phase::Playing {
             return;
         }
         let Some(a) = self.slots.get(&from).map(|s| s.state.clone()) else {
             return;
         };
+        let seen: Vec<PlayerState> = match (rewind, self.past(rewind)) {
+            (r, Some(past)) if r > 0 => past.clone(),
+            _ => self.slots.values().map(|s| s.state.clone()).collect(),
+        };
         let (fx, fz) = (-libm::sinf(a.yaw), -libm::cosf(a.yaw));
         let mut best: Option<(u32, f32, f32, f32)> = None;
-        for (&id, s) in &self.slots {
-            let t = &s.state;
-            if id == from || t.ko > 0.0 {
+        for t in &seen {
+            let id = t.id;
+            // must still be here and standing now, and was standing then
+            let standing_now = self.slots.get(&id).is_some_and(|s| s.state.ko <= 0.0);
+            if id == from || t.ko > 0.0 || !standing_now {
                 continue;
             }
             let (dx, dz) = (t.x - a.x, t.z - a.z);
@@ -1355,5 +1364,45 @@ mod tests {
             t.hp < combat::MAX_HP || t.dead > 0.0,
             "railing stopped every round: {t:?}"
         );
+    }
+
+    #[test]
+    fn slaps_hit_where_the_slapper_saw_the_target() {
+        let run = |view_behind: u64, after_move: u32| {
+            let mut g = two_players(Mode::Slap);
+            let idle = |g: &mut Game, seq: u32, b: u32, view: f64| {
+                g.handle(RoomEvent::Input {
+                    id: 1,
+                    frames: vec![InputFrame {
+                        seq,
+                        buttons: b,
+                        view,
+                        ..Default::default()
+                    }],
+                });
+                g.handle(RoomEvent::Input {
+                    id: 2,
+                    frames: vec![InputFrame {
+                        seq,
+                        ..Default::default()
+                    }],
+                });
+                g.step();
+            };
+            for seq in 1..=20 {
+                idle(&mut g, seq, 0, 0.0);
+            }
+            // the target steps back out of reach; the slapper's screen still shows it close
+            g.slots.get_mut(&2).unwrap().state.z = 7.5;
+            for seq in 21..21 + after_move {
+                idle(&mut g, seq, 0, 0.0);
+            }
+            let view = (g.tick as f64 + 1.0 - view_behind as f64).max(1.0);
+            idle(&mut g, 100, button::FIRE, view);
+            g.slots[&1].slaps == 1
+        };
+        assert!(run(9, 6), "seen 9 ticks ago, in reach: hit");
+        assert!(!run(1, 6), "seen where it is now, out of reach: miss");
+        assert!(!run(25, 20), "older than the 250 ms cap: miss");
     }
 }
